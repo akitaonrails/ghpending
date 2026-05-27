@@ -2,33 +2,47 @@ use anyhow::{Result, bail};
 use inquire::{MultiSelect, Text};
 use octocrab::Octocrab;
 
+use crate::github::ListSource;
 use crate::{config, github};
 
-pub async fn run(crab: &Octocrab, user: Option<String>) -> Result<()> {
+pub async fn run(crab: &Octocrab, user: Option<String>, all: bool) -> Result<()> {
     let mut cfg = config::load()?;
 
-    let username = match resolve_user(user, cfg.user.clone()) {
-        UserChoice::Override(u) => {
-            cfg.user = Some(u.clone());
-            config::save(&cfg)?;
-            u
+    let found = if all {
+        github::list_authenticated_repos(crab).await?
+    } else {
+        let username = match resolve_user(user, cfg.user.clone()) {
+            UserChoice::Override(u) => {
+                cfg.user = Some(u.clone());
+                config::save(&cfg)?;
+                u
+            }
+            UserChoice::Saved(u) => u,
+            UserChoice::Prompt => {
+                let u = Text::new("GitHub username or org to list repos from:")
+                    .prompt()?
+                    .trim()
+                    .to_owned();
+                cfg.user = Some(u.clone());
+                config::save(&cfg)?;
+                u
+            }
+            UserChoice::Blank => bail!("--user cannot be empty"),
+        };
+
+        match github::resolve_source_for(crab, &username).await? {
+            ListSource::Authenticated => github::list_authenticated_repos(crab).await?,
+            ListSource::Org(org) => github::list_org_repos(crab, &org).await?,
+            ListSource::PublicUser(u) => github::list_user_repos(crab, &u).await?,
         }
-        UserChoice::Saved(u) => u,
-        UserChoice::Prompt => {
-            let u = Text::new("GitHub username or org to list repos from:")
-                .prompt()?
-                .trim()
-                .to_owned();
-            cfg.user = Some(u.clone());
-            config::save(&cfg)?;
-            u
-        }
-        UserChoice::Blank => bail!("--user cannot be empty"),
     };
 
-    let found = github::list_user_repos(crab, &username).await?;
     if found.is_empty() {
-        println!("No public repos found for: {username}");
+        if all {
+            println!("No repos found for your account.");
+        } else {
+            println!("No repos found.");
+        }
         return Ok(());
     }
 

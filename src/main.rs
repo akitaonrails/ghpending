@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
     match &cli.command {
         Some(Commands::List) => commands::list::run()?,
         Some(Commands::Rm) => commands::remove::run()?,
-        Some(Commands::Add { user }) => commands::add::run(&crab, user.clone()).await?,
+        Some(Commands::Add { user, all }) => commands::add::run(&crab, user.clone(), *all).await?,
         None => commands::digest::run(&crab).await?,
     }
 
