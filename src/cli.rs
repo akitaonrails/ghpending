@@ -13,7 +13,11 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Pick repos from a GitHub user/org to track
-    Add,
+    Add {
+        /// GitHub user/org to list repos from; replaces the saved one
+        #[arg(long)]
+        user: Option<String>,
+    },
     /// Remove repos from the watch list
     Rm,
     /// Print all tracked repos

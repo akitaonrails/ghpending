@@ -50,13 +50,14 @@ cd ghpending && git pull && cargo install --path .
 ## Usage
 
 ```sh
-ghpending add    # pick repos from a GitHub user/org to track
+ghpending add                # pick repos from the saved user/org to track
+ghpending add --user <name>  # switch to a different user/org (replaces the saved one)
 ghpending        # print the digest
 ghpending list   # show tracked repos
 ghpending rm     # remove repos from the list
 ```
 
-- `ghpending add` — prompts for a GitHub username or org, lists their public repos, and lets you select which ones to track. The username is saved so subsequent `add` runs skip the prompt.
+- `ghpending add` — prompts for a GitHub username or org, lists their public repos, and lets you select which ones to track. The username is saved so subsequent `add` runs skip the prompt. Pass `--user <name>` to switch to a different user/org without editing the config; it replaces the saved one.
 - `ghpending` — fetches all tracked repos concurrently and prints a digest of open issues and pull requests.
 - `ghpending list` — prints the repos currently in your watch list.
 - `ghpending rm` — opens an interactive menu to select repos to remove from tracking.
@@ -85,7 +86,7 @@ user = "akitaonrails"
 repos = ["ratatui-org/ratatui", "tokio-rs/tokio"]
 ```
 
-You can edit the file directly to change the `user` field or reorder repos.
+Run `ghpending add --user <name>` to change the `user` field, or edit the file directly to reorder repos.
 
 ## License
 
