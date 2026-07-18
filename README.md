@@ -105,6 +105,31 @@ repos = ["ratatui-org/ratatui", "tokio-rs/tokio"]
 
 Run `ghpending add --user <name>` to change the `user` field, or edit the file directly to reorder repos.
 
+## GitLab
+
+Add a `[gitlab]` section to track GitLab issues and merge requests in the same digest. Merge requests render as `PR`, and each GitLab entry is labeled with its instance host so it is distinguishable from a GitHub repo:
+
+```toml
+repos = ["tokio-rs/tokio"]        # GitHub repos keep working unchanged
+
+[gitlab]
+projects = ["gitlab-org/gitlab-runner"]
+```
+
+Without a `url`, projects are read from the public `https://gitlab.com`. Point it at your own instance to track a self-hosted GitLab:
+
+```toml
+[gitlab]
+url = "https://gitlab.example.org"
+projects = ["nucleo-ti/portal", "grupo/subgrupo/app"]
+```
+
+Project paths include subgroups. Set `GITLAB_TOKEN` to reach private projects (or raise rate limits); it takes precedence over a `token` value in the config file. Public projects work unauthenticated.
+
+Unlike the GitHub client, GitLab requests always go **direct** — they never use the SOCKS proxy, since a self-hosted instance is usually only reachable on your own network.
+
+Current limitations: `ghpending add`, `list` and `rm` still cover GitHub repos only, so GitLab projects are added by editing the config file, and one GitLab instance is supported at a time. See [`docs/gitlab.md`](docs/gitlab.md) for details.
+
 ## Themes
 
 Pass `--theme nerv` on the command line (any subcommand) or set `theme = "nerv"` in the config file to switch to the NERV interface palette. The older purple-accent Evangelion palette is still available as `evangelion`.

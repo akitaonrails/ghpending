@@ -5,6 +5,9 @@ mod display;
 mod format;
 mod github;
 mod github_client;
+mod gitlab;
+mod gitlab_client;
+mod model;
 mod theme;
 
 use anyhow::{Result, bail};
@@ -36,12 +39,17 @@ async fn main() -> Result<()> {
     };
 
     let crab = github_client::build()?;
+    // Built only when the user configured a `[gitlab]` section.
+    let gitlab = match &cfg.gitlab {
+        Some(gl_cfg) => Some(gitlab_client::build(gl_cfg)?),
+        None => None,
+    };
 
     match &cli.command {
         Some(Commands::List) => commands::list::run()?,
         Some(Commands::Rm) => commands::remove::run()?,
         Some(Commands::Add { user, all }) => commands::add::run(&crab, user.clone(), *all).await?,
-        None => commands::digest::run(&crab, &resolved_theme).await?,
+        None => commands::digest::run(&crab, gitlab.as_ref(), &resolved_theme).await?,
     }
 
     Ok(())

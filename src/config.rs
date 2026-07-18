@@ -10,6 +10,37 @@ pub struct Config {
     pub repos: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// Present only when the user tracks GitLab projects — absent means the
+    /// GitLab client is never built.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gitlab: Option<GitlabConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GitlabConfig {
+    /// Empty → the public https://gitlab.com. Set it to point at a self-hosted
+    /// instance instead.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
+    /// Prefer the `GITLAB_TOKEN` env var; this is the fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub projects: Vec<String>,
+}
+
+pub const DEFAULT_GITLAB_URL: &str = "https://gitlab.com";
+
+impl GitlabConfig {
+    /// The configured URL, or the public gitlab.com when none was given.
+    pub fn effective_url(&self) -> &str {
+        let url = self.url.trim();
+        if url.is_empty() {
+            DEFAULT_GITLAB_URL
+        } else {
+            url
+        }
+    }
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -60,6 +91,7 @@ mod tests {
             user: Some("octocat".into()),
             repos: vec!["owner/repo".into(), "foo/bar".into()],
             theme: None,
+            gitlab: None,
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
@@ -73,6 +105,7 @@ mod tests {
             user: None,
             repos: vec!["owner/repo".into()],
             theme: None,
+            gitlab: None,
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
@@ -86,6 +119,7 @@ mod tests {
         assert!(cfg.user.is_none());
         assert!(cfg.repos.is_empty());
         assert!(cfg.theme.is_none());
+        assert!(cfg.gitlab.is_none());
     }
 
     #[test]
@@ -94,6 +128,7 @@ mod tests {
             user: Some("octocat".into()),
             repos: vec!["owner/repo".into()],
             theme: Some("nerv".into()),
+            gitlab: None,
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
@@ -106,10 +141,71 @@ mod tests {
             user: None,
             repos: vec![],
             theme: None,
+            gitlab: None,
         };
         let s = toml::to_string(&cfg).unwrap();
         assert!(!s.contains("theme"));
         let back: Config = toml::from_str(&s).unwrap();
         assert!(back.theme.is_none());
+    }
+
+    #[test]
+    fn round_trip_with_gitlab_section() {
+        let cfg = Config {
+            user: None,
+            repos: vec!["owner/repo".into()],
+            theme: None,
+            gitlab: Some(GitlabConfig {
+                url: "https://gitlab.example.org".into(),
+                token: Some("secret".into()),
+                projects: vec!["group/sub/app".into()],
+            }),
+        };
+        let s = toml::to_string(&cfg).unwrap();
+        let back: Config = toml::from_str(&s).unwrap();
+        let gl = back.gitlab.unwrap();
+        assert_eq!(gl.effective_url(), "https://gitlab.example.org");
+        assert_eq!(gl.token.as_deref(), Some("secret"));
+        assert_eq!(gl.projects, vec!["group/sub/app"]);
+    }
+
+    #[test]
+    fn gitlab_without_url_defaults_to_public_gitlab() {
+        let cfg: Config = toml::from_str(
+            r#"
+repos = []
+[gitlab]
+projects = ["gitlab-org/gitlab-runner"]
+"#,
+        )
+        .unwrap();
+        let gl = cfg.gitlab.unwrap();
+        assert_eq!(gl.effective_url(), "https://gitlab.com");
+        assert!(gl.token.is_none());
+    }
+
+    #[test]
+    fn gitlab_blank_url_defaults_to_public_gitlab() {
+        let gl = GitlabConfig {
+            url: "   ".into(),
+            ..Default::default()
+        };
+        assert_eq!(gl.effective_url(), "https://gitlab.com");
+    }
+
+    #[test]
+    fn gitlab_url_is_trimmed() {
+        let gl = GitlabConfig {
+            url: "  https://gitlab.dpe.br  ".into(),
+            ..Default::default()
+        };
+        assert_eq!(gl.effective_url(), "https://gitlab.dpe.br");
+    }
+
+    #[test]
+    fn gitlab_none_is_omitted_from_serialization() {
+        let cfg = Config::default();
+        let s = toml::to_string(&cfg).unwrap();
+        assert!(!s.contains("gitlab"));
     }
 }

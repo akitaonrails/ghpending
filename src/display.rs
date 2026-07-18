@@ -3,7 +3,7 @@ use owo_colors::Style;
 use terminal_size::{Width, terminal_size};
 
 use crate::format::{relative_time, truncate_title};
-use crate::github::{ItemKind, RepoResult, RepoStatus};
+use crate::model::{ItemKind, RepoResult, RepoStatus};
 use crate::theme::Theme;
 
 fn term_width() -> usize {
@@ -115,7 +115,7 @@ fn render_inner(results: &[RepoResult], theme: &Theme, color: bool, width: usize
     }
 }
 
-fn pr_state_label(item: &crate::github::RepoItem) -> Option<&'static str> {
+fn pr_state_label(item: &crate::model::RepoItem) -> Option<&'static str> {
     match item.kind {
         ItemKind::PullRequest => match item.pr_draft {
             Some(true) => Some("draft"),
@@ -129,7 +129,7 @@ fn pr_state_label(item: &crate::github::RepoItem) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::github::{ItemKind, RepoError, RepoItem, RepoResult, RepoStatus};
+    use crate::model::{ItemKind, RepoError, RepoItem, RepoResult, RepoStatus};
     use crate::theme::Theme;
 
     fn make_item(kind: ItemKind, number: u64, title: &str, days_ago: i64) -> RepoItem {

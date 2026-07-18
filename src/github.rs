@@ -1,46 +1,8 @@
-use std::cmp::Ordering;
-
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 use octocrab::Octocrab;
 use thiserror::Error;
 
-#[derive(Debug, Clone)]
-pub struct RepoItem {
-    pub kind: ItemKind,
-    pub number: u64,
-    pub title: String,
-    pub created_at: DateTime<Utc>,
-    pub author: String,
-    pub pr_draft: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ItemKind {
-    PullRequest,
-    Issue,
-}
-
-#[derive(Debug, Clone)]
-pub struct RepoResult {
-    pub repo: String,
-    pub status: RepoStatus,
-}
-
-#[derive(Debug, Clone)]
-pub enum RepoStatus {
-    Items(Vec<RepoItem>),
-    NotFound,
-    Error(RepoError),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum RepoError {
-    #[error("timeout after 30s")]
-    Timeout,
-    #[error("{0}")]
-    Api(String),
-}
+use crate::model::{ItemKind, RepoError, RepoItem, RepoResult, RepoStatus, item_cmp};
 
 #[derive(Debug, Error)]
 pub enum GithubError {
@@ -126,14 +88,6 @@ pub fn resolve_list_source(
     match kind {
         Some(AccountKind::Organization) => ListSource::Org(username.to_owned()),
         _ => ListSource::PublicUser(username.to_owned()),
-    }
-}
-
-pub fn item_cmp(a: &RepoItem, b: &RepoItem) -> Ordering {
-    match (&a.kind, &b.kind) {
-        (ItemKind::PullRequest, ItemKind::Issue) => Ordering::Less,
-        (ItemKind::Issue, ItemKind::PullRequest) => Ordering::Greater,
-        _ => b.number.cmp(&a.number),
     }
 }
 
@@ -342,17 +296,6 @@ async fn fetch_items_inner(
 mod tests {
     use super::*;
 
-    fn make_item(kind: ItemKind, number: u64) -> RepoItem {
-        RepoItem {
-            kind,
-            number,
-            title: format!("item {number}"),
-            created_at: Utc::now(),
-            author: "user".into(),
-            pr_draft: None,
-        }
-    }
-
     #[test]
     fn account_kind_organization() {
         assert_eq!(
@@ -435,18 +378,5 @@ mod tests {
     fn split_repo_many_slashes() {
         // splitn(2) gives ("a", "b/c") — name contains a slash, which is fine
         assert_eq!(split_repo("a/b/c"), Some(("a", "b/c")));
-    }
-
-    #[test]
-    fn item_cmp_sorts_prs_before_issues_then_number_desc() {
-        let mut items = [
-            make_item(ItemKind::Issue, 5),
-            make_item(ItemKind::PullRequest, 2),
-            make_item(ItemKind::Issue, 10),
-            make_item(ItemKind::PullRequest, 8),
-        ];
-        items.sort_by(item_cmp);
-        let numbers: Vec<u64> = items.iter().map(|i| i.number).collect();
-        assert_eq!(numbers, vec![8, 2, 10, 5]);
     }
 }
