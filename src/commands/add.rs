@@ -191,6 +191,13 @@ async fn add_gitlab() -> Result<()> {
             bail!("GitLab URL cannot be empty");
         }
         gl_cfg.url = url;
+
+        // Persist the instance right away. Everything after this can bail out
+        // (no token, empty listing, aborted picker) and the user should not
+        // have to retype the URL on the next run.
+        gitlab_client::host_from_url(gl_cfg.effective_url())?;
+        cfg.gitlab = Some(gl_cfg.clone());
+        config::save(&cfg)?;
     }
 
     let client = gitlab_client::build(&gl_cfg)?;

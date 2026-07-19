@@ -8,6 +8,8 @@
 ## Commands
 
 - Baseline verification: `cargo test` (this is what release CI runs before building).
+- Interactive prompts are covered by PTY-driven end-to-end tests in `tests/interactive.rs` (`cargo test --test interactive`, ~1s). They spawn the real binary through a pseudo-terminal with `rexpect`, point `XDG_CONFIG_HOME` at a temp dir, and strip ANSI codes before matching. `inquire`'s own mock terminal is `pub(crate)`, so driving a real PTY is the only way to exercise the prompts from outside the crate.
+- `add` tests hit a throwaway `TcpListener` serving canned GitLab JSON (`fake_gitlab` in that file) instead of a real instance, so they stay offline and deterministic. Add new provider-listing cases there rather than against a live host.
 - Focus one unit test with normal Rust filters, e.g. `cargo test model::tests::item_cmp_sorts_prs_before_issues_then_number_desc` or `cargo test commands::add::tests::flag_overrides_saved_user`.
 - Release builds mirror CI: `cargo build --release --target x86_64-unknown-linux-gnu` and `cargo build --release --target aarch64-apple-darwin`. CI installs stable Rust; there is no repo `rust-toolchain` file.
 - Manual CLI entrypoints: `cargo run --` for the digest, `cargo run -- add [--user <name>|--all]`, `cargo run -- list`, and `cargo run -- rm`. `add`/`rm` are interactive; `add` and the digest hit the live GitHub API, and the digest hits the live GitLab API when `[gitlab]` is configured.

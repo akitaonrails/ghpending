@@ -111,6 +111,19 @@ recovering the provider from that string would be guesswork. The `Target` also
 holds the **bare** project path, which is what gets removed from
 `[gitlab].projects`.
 
+## Testing the prompts
+
+`inquire` exposes no mock terminal outside its own crate, so `tests/interactive.rs`
+drives the real binary through a pseudo-terminal with `rexpect` (a dev-dependency;
+nothing new ships in the binary). `add` talks to a local `TcpListener` serving
+canned JSON rather than a live GitLab, which keeps the suite offline and under
+a second.
+
+What that buys: the provider screen, the URL bootstrap, the group prompt, the
+project picker and both `rm` paths are all asserted against the resulting
+`config.toml` — including that removing a GitLab project leaves `repos`
+untouched, and that the instance URL survives an empty listing.
+
 ## Out of scope
 
 - Only one GitLab instance at a time.

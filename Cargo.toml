@@ -38,3 +38,6 @@ thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "time"] }
 toml = "1.1.2"
 web-time = "1.1.0"
+
+[dev-dependencies]
+rexpect = "0.7.1"
