@@ -35,9 +35,10 @@ pub struct GitlabClient {
     host: String,
 }
 
-/// Builds a client for a configured `[gitlab]` section.
-pub fn build(cfg: &GitlabConfig) -> Result<GitlabClient> {
-    let url = cfg.effective_url();
+/// Host of a GitLab instance URL, e.g. `https://gitlab.dpe.br/` → `gitlab.dpe.br`.
+/// Split out from [`build`] so `list`/`rm` can label projects without paying for
+/// a client they never use.
+pub fn host_from_url(url: &str) -> Result<String> {
     let uri: Uri = url
         .parse()
         .with_context(|| format!("gitlab url is not a valid URI: {url}"))?;
@@ -45,10 +46,16 @@ pub fn build(cfg: &GitlabConfig) -> Result<GitlabClient> {
         Some("http") | Some("https") => {}
         _ => bail!("gitlab url must start with http:// or https:// (got {url})"),
     }
-    let host = uri
+    Ok(uri
         .host()
         .with_context(|| format!("gitlab url has no host: {url}"))?
-        .to_owned();
+        .to_owned())
+}
+
+/// Builds a client for a configured `[gitlab]` section.
+pub fn build(cfg: &GitlabConfig) -> Result<GitlabClient> {
+    let url = cfg.effective_url();
+    let host = host_from_url(url)?;
 
     let mut connector = HttpConnector::new();
     connector.enforce_http(false);
@@ -85,6 +92,13 @@ fn gitlab_token(cfg: &GitlabConfig) -> Option<String> {
 impl GitlabClient {
     pub fn host(&self) -> &str {
         &self.host
+    }
+
+    /// Whether any token was resolved. Anonymous `membership=true` requests come
+    /// back as an empty list rather than 401, so callers need this to tell
+    /// "you're in no projects" apart from "you never authenticated".
+    pub fn has_token(&self) -> bool {
+        self.token.is_some()
     }
 
     /// GETs `path` (already URL-encoded) with `query`, deserializing the JSON
@@ -153,6 +167,25 @@ pub enum GitlabHttpError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_from_url_extracts_host() {
+        assert_eq!(host_from_url("https://gitlab.com").unwrap(), "gitlab.com");
+        assert_eq!(
+            host_from_url("https://gitlab.dpe.br/").unwrap(),
+            "gitlab.dpe.br"
+        );
+        assert_eq!(
+            host_from_url("http://gitlab.local:8080").unwrap(),
+            "gitlab.local"
+        );
+    }
+
+    #[test]
+    fn host_from_url_rejects_non_http_scheme() {
+        assert!(host_from_url("ftp://gitlab.example.org").is_err());
+        assert!(host_from_url("gitlab.example.org").is_err());
+    }
 
     #[test]
     fn build_rejects_non_http_url() {

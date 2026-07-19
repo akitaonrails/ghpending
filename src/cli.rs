@@ -15,20 +15,22 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Pick repos from a GitHub user/org to track
+    /// Pick repos/projects to track, from GitHub or GitLab
     Add {
         /// GitHub user/org to list repos from; replaces the saved one.
+        /// GitHub-only, so passing it skips the provider prompt.
         /// Lists private repos too when it's your own account or an org you
         /// belong to (needs a GITHUB_TOKEN with `repo` scope).
         #[arg(long, conflicts_with = "all")]
         user: Option<String>,
         /// List every repo your token can reach (owned, collaborator and
         /// org-member), private included, ignoring the saved user.
+        /// GitHub-only, so passing it skips the provider prompt.
         #[arg(long)]
         all: bool,
     },
-    /// Remove repos from the watch list
+    /// Remove repos/projects from the watch list
     Rm,
-    /// Print all tracked repos
+    /// Print all tracked repos/projects
     List,
 }

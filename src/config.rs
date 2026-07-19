@@ -25,6 +25,10 @@ pub struct GitlabConfig {
     /// Prefer the `GITLAB_TOKEN` env var; this is the fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// Last group `add` listed projects from, reused as the prompt default.
+    /// `None` means "list everything you're a member of".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     #[serde(default)]
     pub projects: Vec<String>,
 }
@@ -158,6 +162,7 @@ mod tests {
             gitlab: Some(GitlabConfig {
                 url: "https://gitlab.example.org".into(),
                 token: Some("secret".into()),
+                group: Some("group".into()),
                 projects: vec!["group/sub/app".into()],
             }),
         };
@@ -166,6 +171,7 @@ mod tests {
         let gl = back.gitlab.unwrap();
         assert_eq!(gl.effective_url(), "https://gitlab.example.org");
         assert_eq!(gl.token.as_deref(), Some("secret"));
+        assert_eq!(gl.group.as_deref(), Some("group"));
         assert_eq!(gl.projects, vec!["group/sub/app"]);
     }
 
@@ -182,6 +188,20 @@ projects = ["gitlab-org/gitlab-runner"]
         let gl = cfg.gitlab.unwrap();
         assert_eq!(gl.effective_url(), "https://gitlab.com");
         assert!(gl.token.is_none());
+        assert!(gl.group.is_none());
+    }
+
+    #[test]
+    fn gitlab_group_none_is_omitted_from_serialization() {
+        let cfg = Config {
+            gitlab: Some(GitlabConfig {
+                projects: vec!["acme/app".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let s = toml::to_string(&cfg).unwrap();
+        assert!(!s.contains("group ="));
     }
 
     #[test]

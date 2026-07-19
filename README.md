@@ -60,20 +60,20 @@ cd ghpending && git pull && cargo install --path .
 ## Usage
 
 ```sh
-ghpending add                # pick repos from the saved user/org to track
-ghpending add --user <name>  # switch to a different user/org (replaces the saved one)
+ghpending add                # pick a provider (GitHub/GitLab), then pick what to track
+ghpending add --user <name>  # switch to a different GitHub user/org (replaces the saved one)
 ghpending add --all          # pick from every repo your token can reach (private included)
 ghpending        # print the digest
-ghpending list   # show tracked repos
-ghpending rm     # remove repos from the list
+ghpending list   # show tracked repos and projects
+ghpending rm     # remove repos and projects from the list
 ```
 
-- `ghpending add` — lists repos and lets you select which to track. The username is saved so subsequent `add` runs skip the prompt. Pass `--user <name>` to switch to a different user/org without editing the config; it replaces the saved one.
+- `ghpending add` — asks whether you are adding from GitHub or GitLab, then lists what is available and lets you select which to track. `--user` and `--all` are GitHub-only, so passing either one skips that question. For GitHub, the username is saved so subsequent `add` runs skip the prompt; pass `--user <name>` to switch to a different user/org without editing the config, and it replaces the saved one.
   - **Private repos:** with a `GITHUB_TOKEN` that has the `repo` scope, `add` includes private repos automatically when the target is your own account or an org you belong to. For a third-party user only their public repos are visible.
   - `--all` lists every repo your token can reach — owned, collaborator and organization-member, private included — in a single picker, ignoring the saved user. Use it to grab private repos you collaborate on across different owners.
 - `ghpending` — fetches all tracked repos concurrently and prints a digest of open issues and pull requests.
-- `ghpending list` — prints the repos currently in your watch list.
-- `ghpending rm` — opens an interactive menu to select repos to remove from tracking.
+- `ghpending list` — prints everything in your watch list, GitHub repos first and then GitLab projects.
+- `ghpending rm` — opens an interactive menu to select entries to remove from tracking, covering both providers.
 
 ## Authentication (optional)
 
@@ -107,7 +107,7 @@ Run `ghpending add --user <name>` to change the `user` field, or edit the file d
 
 ## GitLab
 
-Add a `[gitlab]` section to track GitLab issues and merge requests in the same digest. Merge requests render as `PR`, and each GitLab entry is labeled with its instance host so it is distinguishable from a GitHub repo:
+Run `ghpending add` and pick **GitLab** to set this up interactively — the first run asks for the instance URL and creates the section for you. You can also write it by hand to track GitLab issues and merge requests in the same digest. Merge requests render as `PR`, and each GitLab entry is labeled with its instance host so it is distinguishable from a GitHub repo:
 
 ```toml
 repos = ["tokio-rs/tokio"]        # GitHub repos keep working unchanged
@@ -124,11 +124,13 @@ url = "https://gitlab.example.org"
 projects = ["nucleo-ti/portal", "grupo/subgrupo/app"]
 ```
 
-Project paths include subgroups. Set `GITLAB_TOKEN` to reach private projects (or raise rate limits); it takes precedence over a `token` value in the config file. Public projects work unauthenticated.
+Project paths include subgroups. Set `GITLAB_TOKEN` to reach private projects (or raise rate limits); it takes precedence over a `token` value in the config file. Public projects work unauthenticated, but listing the projects you belong to during `add` does require a token with the `read_api` scope.
+
+When adding, leaving the group prompt blank lists every project you are a member of; typing a group (e.g. `defensoria`) lists that group and its subgroups. The last group you used is saved as `group` and offered as the default next time.
 
 Unlike the GitHub client, GitLab requests always go **direct** — they never use the SOCKS proxy, since a self-hosted instance is usually only reachable on your own network.
 
-Current limitations: `ghpending add`, `list` and `rm` still cover GitHub repos only, so GitLab projects are added by editing the config file, and one GitLab instance is supported at a time. See [`docs/gitlab.md`](docs/gitlab.md) for details.
+Current limitation: one GitLab instance is supported at a time. See [`docs/gitlab.md`](docs/gitlab.md) for details.
 
 ## Themes
 

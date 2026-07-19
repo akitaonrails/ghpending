@@ -20,6 +20,8 @@
 - GitHub API client auto-routes through a SOCKS proxy when one is already available at `127.0.0.1:9050`; `GHPENDING_GITHUB_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` are also honored for `socks5`/`socks5h` values. If no proxy is available, it falls back to direct API access.
 - Config is user-local, not repo-local: Linux `~/.config/ghpending/config.toml`, macOS `~/Library/Application Support/ghpending/config.toml`; saves use mode `0600` on Unix. On Linux, set a temporary `XDG_CONFIG_HOME` for manual runs if you do not want to mutate the real watch list.
 - `ghpending add --user <name>` persists/replaces the saved default user. `ghpending add --all` ignores the saved user and lists every token-visible owned/collaborator/org-member repo.
+- Bare `ghpending add` prompts for the provider (GitHub/GitLab) first; `--user`/`--all` are GitHub-only and skip that prompt. The GitLab branch builds its own client, because `main` only builds one when `[gitlab]` already exists and `add` is what creates that section.
+- Anonymous GitLab `membership=true` listing returns an empty list, not 401, so `add` checks `GitlabClient::has_token()` to explain an empty result instead of dead-ending.
 - Listing source behavior is intentional: the authenticated user's own login uses the authenticated repo listing, org targets use org listing, and third-party users are public-only.
 
 ## Behavior to preserve
@@ -29,6 +31,7 @@
 - GitLab maps merge requests onto `ItemKind::PullRequest` and `iid` onto `number`; its issues endpoint does not return MRs, so no dedup filter is needed there. Pagination follows `x-next-page` at `per_page=100`, capped at `MAX_PAGES = 20`.
 - GitLab results are labeled `{host}/{path}` (e.g. `gitlab.com/group/app`) to disambiguate them from GitHub's `owner/repo` in a mixed digest. The label is display-only; provider identity lives in `digest::FetchTask`.
 - The 30s digest budget is shared across providers. Very large projects (e.g. `gitlab-org/gitlab-runner`, ~2000 open items) can exhaust it alone and render as a timeout; that is expected, not a GitLab bug.
+- `list` and `rm` share `commands::list::watch_entries`, which labels GitHub repos as `owner/repo` and GitLab projects as `{host}/{path}`. Each entry carries a `Target` so `rm` never has to parse a label back into a provider; the `Target` holds the bare project path that `[gitlab].projects` stores.
 - The digest omits repos with zero open items, but the summary still reports total repos checked and how many have pending tasks.
 - `add` stores repos sorted after selection.
 

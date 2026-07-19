@@ -1,16 +1,57 @@
-use std::{future::Future, time::Duration};
+use std::{fmt, future::Future, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use inquire::{MultiSelect, Text};
+use inquire::{MultiSelect, Select, Text};
 use octocrab::Octocrab;
 use tokio::time::timeout;
 
+use crate::config::DEFAULT_GITLAB_URL;
 use crate::github::ListSource;
-use crate::{config, github};
+use crate::{config, github, gitlab, gitlab_client};
 
 const API_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Which forge `add` is adding to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Provider {
+    Github,
+    Gitlab,
+}
+
+impl fmt::Display for Provider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Provider::Github => write!(f, "GitHub"),
+            Provider::Gitlab => write!(f, "GitLab"),
+        }
+    }
+}
+
+/// `--user` and `--all` are GitHub-only, so either one settles the provider and
+/// the picker is skipped. `None` means we have to ask.
+fn provider_from_flags(user: Option<&str>, all: bool) -> Option<Provider> {
+    if all || user.is_some() {
+        Some(Provider::Github)
+    } else {
+        None
+    }
+}
+
 pub async fn run(crab: &Octocrab, user: Option<String>, all: bool) -> Result<()> {
+    let provider = match provider_from_flags(user.as_deref(), all) {
+        Some(provider) => provider,
+        None => {
+            Select::new("Add repos from:", vec![Provider::Github, Provider::Gitlab]).prompt()?
+        }
+    };
+
+    match provider {
+        Provider::Github => add_github(crab, user, all).await,
+        Provider::Gitlab => add_gitlab().await,
+    }
+}
+
+async fn add_github(crab: &Octocrab, user: Option<String>, all: bool) -> Result<()> {
     let mut cfg = config::load()?;
 
     let found = if all {
@@ -115,6 +156,120 @@ async fn with_api_timeout<T>(
     timeout(API_TIMEOUT, future).await.context(message)?
 }
 
+/// Where the GitLab picker should pull projects from.
+#[derive(Debug, PartialEq)]
+enum GroupChoice {
+    /// Blank input: everything the token is a member of.
+    Membership,
+    Group(String),
+}
+
+fn group_selection(input: &str) -> GroupChoice {
+    let input = input.trim();
+    if input.is_empty() {
+        GroupChoice::Membership
+    } else {
+        GroupChoice::Group(input.to_owned())
+    }
+}
+
+/// Unlike the GitHub path, this builds its own client: `main` only builds one
+/// when `[gitlab]` already exists, and `add` is precisely how that section gets
+/// created in the first place.
+async fn add_gitlab() -> Result<()> {
+    let mut cfg = config::load()?;
+    let mut gl_cfg = cfg.gitlab.clone().unwrap_or_default();
+
+    // Only ask for the instance the first time; afterwards it is settled.
+    if cfg.gitlab.is_none() {
+        let url = Text::new("GitLab instance URL:")
+            .with_default(DEFAULT_GITLAB_URL)
+            .prompt()?
+            .trim()
+            .to_owned();
+        if url.is_empty() {
+            bail!("GitLab URL cannot be empty");
+        }
+        gl_cfg.url = url;
+    }
+
+    let client = gitlab_client::build(&gl_cfg)?;
+
+    let group_prompt = Text::new("Group to list projects from (blank = all your projects):");
+    let group_input = match gl_cfg.group.as_deref() {
+        Some(saved) => group_prompt.with_default(saved).prompt()?,
+        None => group_prompt.prompt()?,
+    };
+
+    let (found, group) = match group_selection(&group_input) {
+        GroupChoice::Membership => (
+            with_api_timeout(
+                gitlab::list_membership_projects(&client),
+                "listing GitLab projects timed out after 30s",
+            )
+            .await?,
+            None,
+        ),
+        GroupChoice::Group(group) => (
+            with_api_timeout(
+                gitlab::list_group_projects(&client, &group),
+                "listing GitLab projects timed out after 30s",
+            )
+            .await?,
+            Some(group),
+        ),
+    };
+
+    if found.is_empty() {
+        // An anonymous membership listing succeeds with an empty body rather
+        // than failing, so spell out the likely cause instead of a dead end.
+        if !client.has_token() {
+            println!(
+                "No GitLab projects found. Set GITLAB_TOKEN to a personal access \
+                 token with the `read_api` scope to see the projects you belong to."
+            );
+        } else {
+            println!("No GitLab projects found.");
+        }
+        return Ok(());
+    }
+
+    let already: std::collections::HashSet<&str> = gl_cfg
+        .projects
+        .iter()
+        .map(std::string::String::as_str)
+        .collect();
+    let defaults: Vec<usize> = found
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            if already.contains(p.as_str()) {
+                Some(i)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let selected = MultiSelect::new("Select projects to track:", found)
+        .with_default(&defaults)
+        .prompt()?;
+
+    for project in selected {
+        if !gl_cfg.projects.contains(&project) {
+            gl_cfg.projects.push(project);
+        }
+    }
+    gl_cfg.projects.sort();
+    gl_cfg.group = group;
+
+    let total = gl_cfg.projects.len();
+    cfg.gitlab = Some(gl_cfg);
+    config::save(&cfg)?;
+    println!("Saved. Tracking {total} GitLab project(s) total.");
+    Ok(())
+}
+
 /// Which GitHub user/org `add` should list repos from, decided from the
 /// optional `--user` flag and whatever is already saved in config.
 #[derive(Debug, PartialEq)]
@@ -177,5 +332,33 @@ mod tests {
     #[test]
     fn prompts_when_nothing_supplied_or_saved() {
         assert_eq!(resolve_user(None, None), UserChoice::Prompt);
+    }
+
+    #[test]
+    fn github_only_flags_skip_the_provider_picker() {
+        assert_eq!(
+            provider_from_flags(Some("octocat"), false),
+            Some(Provider::Github)
+        );
+        assert_eq!(provider_from_flags(None, true), Some(Provider::Github));
+    }
+
+    #[test]
+    fn bare_add_asks_which_provider() {
+        assert_eq!(provider_from_flags(None, false), None);
+    }
+
+    #[test]
+    fn blank_group_lists_everything_you_belong_to() {
+        assert_eq!(group_selection(""), GroupChoice::Membership);
+        assert_eq!(group_selection("   "), GroupChoice::Membership);
+    }
+
+    #[test]
+    fn group_input_is_trimmed() {
+        assert_eq!(
+            group_selection("  defensoria/solar  "),
+            GroupChoice::Group("defensoria/solar".into())
+        );
     }
 }
