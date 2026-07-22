@@ -394,7 +394,9 @@ async fn fetch_items_inner(
 }
 
 fn retain_subscribed(items: &mut Vec<RepoItem>, subscribed_numbers: Option<&HashSet<u64>>) {
-    items.retain(|item| subscribed_numbers.is_some_and(|numbers| numbers.contains(&item.number)));
+    if let Some(numbers) = subscribed_numbers {
+        items.retain(|item| numbers.contains(&item.number));
+    }
 }
 
 #[cfg(test)]
@@ -517,6 +519,18 @@ mod tests {
 
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].number, 7);
+    }
+
+    #[test]
+    fn missing_subscription_filter_keeps_all_repo_items() {
+        let mut items = vec![
+            make_item(ItemKind::Issue, 7),
+            make_item(ItemKind::PullRequest, 9),
+        ];
+
+        retain_subscribed(&mut items, None);
+
+        assert_eq!(items.len(), 2);
     }
 
     #[test]

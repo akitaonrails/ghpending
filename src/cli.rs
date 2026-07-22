@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "ghpending",
-    about = "Digest of subscribed open issues and PRs across watched repos"
+    about = "Digest of open issues and PRs across watched repos"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -14,6 +14,9 @@ pub struct Cli {
     /// Maximum items to show across all repos, allocated proportionally
     #[arg(long, value_name = "COUNT")]
     pub limit: Option<usize>,
+    /// Only show items you are subscribed to (requires GITHUB_TOKEN)
+    #[arg(long)]
+    pub subscribed: bool,
 }
 
 #[derive(Subcommand)]

@@ -18,6 +18,9 @@ async fn main() -> Result<()> {
     if cli.limit.is_some() && cli.command.is_some() {
         bail!("--limit can only be used when rendering the digest");
     }
+    if cli.subscribed && cli.command.is_some() {
+        bail!("--subscribed can only be used when rendering the digest");
+    }
 
     let cfg = config::load()?;
 
@@ -44,7 +47,7 @@ async fn main() -> Result<()> {
         Some(Commands::List) => commands::list::run()?,
         Some(Commands::Rm) => commands::remove::run()?,
         Some(Commands::Add { user, all }) => commands::add::run(&crab, user.clone(), *all).await?,
-        None => commands::digest::run(&crab, &resolved_theme, cli.limit).await?,
+        None => commands::digest::run(&crab, &resolved_theme, cli.limit, cli.subscribed).await?,
     }
 
     Ok(())
