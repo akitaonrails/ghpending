@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "ghpending",
-    about = "Digest of open issues and PRs across watched repos"
+    about = "Digest of subscribed open issues and PRs across watched repos"
 )]
 pub struct Cli {
     #[command(subcommand)]
