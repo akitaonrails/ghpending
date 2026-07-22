@@ -13,7 +13,7 @@ use crate::{config, display, github};
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONCURRENT_FETCHES: usize = 4;
 
-pub async fn run(crab: &Octocrab, theme: &Theme) -> Result<()> {
+pub async fn run(crab: &Octocrab, theme: &Theme, limit: Option<usize>) -> Result<()> {
     let cfg = config::load()?;
 
     if cfg.repos.is_empty() {
@@ -45,7 +45,7 @@ pub async fn run(crab: &Octocrab, theme: &Theme) -> Result<()> {
 
     spinner.finish_and_clear();
 
-    let digest = display::render_digest(&results, theme);
+    let digest = display::render_digest(&results, theme, limit);
     print!("{digest}");
 
     if all_repo_fetches_failed(&results) {

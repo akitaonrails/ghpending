@@ -22,14 +22,26 @@ fn paint(text: &str, color: bool, style: Style) -> String {
     }
 }
 
-pub fn render_digest(results: &[RepoResult], theme: &Theme) -> String {
-    render_inner(results, theme, should_colorize(), term_width())
+pub fn render_digest(results: &[RepoResult], theme: &Theme, limit: Option<usize>) -> String {
+    render_inner_limited(results, theme, should_colorize(), term_width(), limit)
 }
 
+#[cfg(test)]
 fn render_inner(results: &[RepoResult], theme: &Theme, color: bool, width: usize) -> String {
+    render_inner_limited(results, theme, color, width, None)
+}
+
+fn render_inner_limited(
+    results: &[RepoResult],
+    theme: &Theme,
+    color: bool,
+    width: usize,
+    limit: Option<usize>,
+) -> String {
     if results.is_empty() {
         return "No repos tracked. Run `ghpending add` to get started.\n".into();
     }
+    let item_allocations = allocate_items(results, limit);
 
     let now = Utc::now();
     let total = results.len();
@@ -45,8 +57,8 @@ fn render_inner(results: &[RepoResult], theme: &Theme, color: bool, width: usize
     let mut body = String::new();
     let mut shown = 0;
 
-    for result in results {
-        if matches!(&result.status, RepoStatus::Items(items) if items.is_empty()) {
+    for (index, result) in results.iter().enumerate() {
+        if matches!(&result.status, RepoStatus::Items(_)) && item_allocations[index] == 0 {
             continue;
         }
 
@@ -70,7 +82,7 @@ fn render_inner(results: &[RepoResult], theme: &Theme, color: bool, width: usize
             RepoStatus::Items(items) => {
                 let title_max = if width > 20 { width - 20 } else { 10 };
 
-                for item in items {
+                for item in items.iter().take(item_allocations[index]) {
                     let (kind_str, number_str, title_str) = match item.kind {
                         ItemKind::PullRequest => {
                             let ks = paint("PR ", color, theme.pr);
@@ -115,6 +127,43 @@ fn render_inner(results: &[RepoResult], theme: &Theme, color: bool, width: usize
     }
 }
 
+fn allocate_items(results: &[RepoResult], limit: Option<usize>) -> Vec<usize> {
+    let mut allocations = results
+        .iter()
+        .map(|result| match &result.status {
+            RepoStatus::Items(items) => items.len(),
+            _ => 0,
+        })
+        .collect::<Vec<_>>();
+    let total = allocations.iter().sum::<usize>();
+    let Some(limit) = limit else {
+        return allocations;
+    };
+    if total <= limit {
+        return allocations;
+    }
+
+    let mut remainders = Vec::new();
+    let mut allocated = 0;
+    for (index, allocation) in allocations.iter_mut().enumerate() {
+        if *allocation == 0 {
+            continue;
+        }
+        let numerator = *allocation as u128 * limit as u128;
+        *allocation = (numerator / total as u128) as usize;
+        allocated += *allocation;
+        remainders.push((index, numerator % total as u128));
+    }
+
+    remainders
+        .sort_unstable_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    for (index, _) in remainders.into_iter().take(limit - allocated) {
+        allocations[index] += 1;
+    }
+
+    allocations
+}
+
 fn pr_state_label(item: &crate::github::RepoItem) -> Option<&'static str> {
     match item.kind {
         ItemKind::PullRequest => match item.pr_draft {
@@ -153,6 +202,57 @@ mod tests {
             author: "testuser".into(),
             pr_draft: draft,
         }
+    }
+
+    #[test]
+    fn item_limit_is_proportional_without_distorting_summary() {
+        let results = vec![
+            RepoResult {
+                repo: "a/large".into(),
+                status: RepoStatus::Items(
+                    (1..=5)
+                        .map(|number| make_item(ItemKind::Issue, number, "large", 1))
+                        .collect(),
+                ),
+            },
+            RepoResult {
+                repo: "b/medium".into(),
+                status: RepoStatus::Items(
+                    (1..=3)
+                        .map(|number| make_item(ItemKind::Issue, number, "medium", 1))
+                        .collect(),
+                ),
+            },
+            RepoResult {
+                repo: "c/small".into(),
+                status: RepoStatus::Items(
+                    (1..=2)
+                        .map(|number| make_item(ItemKind::Issue, number, "small", 1))
+                        .collect(),
+                ),
+            },
+        ];
+
+        assert_eq!(allocate_items(&results, Some(6)), vec![3, 2, 1]);
+
+        let out = render_inner_limited(&results, &Theme::default_theme(), false, 80, Some(6));
+        assert_eq!(
+            out.lines().filter(|line| line.starts_with("  ISS")).count(),
+            6
+        );
+        assert!(out.contains("3 projects checked, 3 with pending tasks"));
+    }
+
+    #[test]
+    fn zero_item_limit_hides_items_but_preserves_summary() {
+        let results = vec![RepoResult {
+            repo: "a/repo".into(),
+            status: RepoStatus::Items(vec![make_item(ItemKind::Issue, 1, "issue", 1)]),
+        }];
+
+        let out = render_inner_limited(&results, &Theme::default_theme(), false, 80, Some(0));
+
+        assert_eq!(out, "1 projects checked, 1 with pending tasks\n");
     }
 
     #[test]
