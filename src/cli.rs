@@ -11,6 +11,9 @@ pub struct Cli {
     /// Color theme (default, evangelion, nerv)
     #[arg(long, global = true)]
     pub theme: Option<String>,
+    /// Maximum items to show across all repos, allocated proportionally
+    #[arg(long, value_name = "COUNT")]
+    pub limit: Option<usize>,
 }
 
 #[derive(Subcommand)]
