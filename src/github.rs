@@ -1,8 +1,10 @@
 use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use octocrab::Octocrab;
+use serde::Deserialize;
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
@@ -20,6 +22,8 @@ pub enum ItemKind {
     PullRequest,
     Issue,
 }
+
+pub type SubscribedItems = HashMap<String, HashSet<u64>>;
 
 #[derive(Debug, Clone)]
 pub struct RepoResult {
@@ -243,7 +247,55 @@ pub async fn resolve_source_for(crab: &Octocrab, username: &str) -> Result<ListS
     ))
 }
 
-pub async fn fetch_repo_items(crab: &Octocrab, repo: &str) -> RepoResult {
+#[derive(Debug, Deserialize)]
+struct SubscribedIssue {
+    number: u64,
+    repository_url: String,
+}
+
+pub async fn fetch_subscribed_items(crab: &Octocrab) -> Result<SubscribedItems> {
+    let first_page = crab
+        .get::<octocrab::Page<SubscribedIssue>, _, _>(
+            "/issues?filter=subscribed&state=open&per_page=100",
+            None::<&()>,
+        )
+        .await
+        .context("listing subscribed issues and pull requests (GITHUB_TOKEN is required)")?;
+    let issues = crab
+        .all_pages(first_page)
+        .await
+        .context("paginating subscribed issues and pull requests")?;
+
+    Ok(index_subscribed_items(issues))
+}
+
+fn index_subscribed_items(issues: Vec<SubscribedIssue>) -> SubscribedItems {
+    let mut subscribed = SubscribedItems::new();
+    for issue in issues {
+        let Some(repo) = repo_name_from_api_url(&issue.repository_url) else {
+            continue;
+        };
+        subscribed.entry(repo).or_default().insert(issue.number);
+    }
+    subscribed
+}
+
+fn repo_name_from_api_url(url: &str) -> Option<String> {
+    let (_, path) = url.split_once("/repos/")?;
+    let mut segments = path.split('/');
+    let owner = segments.next()?;
+    let name = segments.next()?;
+    if owner.is_empty() || name.is_empty() {
+        return None;
+    }
+    Some(format!("{owner}/{name}").to_ascii_lowercase())
+}
+
+pub async fn fetch_repo_items(
+    crab: &Octocrab,
+    repo: &str,
+    subscribed_numbers: Option<&HashSet<u64>>,
+) -> RepoResult {
     let Some((owner, name)) = split_repo(repo) else {
         return RepoResult {
             repo: repo.to_owned(),
@@ -251,7 +303,7 @@ pub async fn fetch_repo_items(crab: &Octocrab, repo: &str) -> RepoResult {
         };
     };
 
-    match fetch_items_inner(crab, owner, name).await {
+    match fetch_items_inner(crab, owner, name, subscribed_numbers).await {
         Ok(items) => RepoResult {
             repo: repo.to_owned(),
             status: RepoStatus::Items(items),
@@ -271,6 +323,7 @@ async fn fetch_items_inner(
     crab: &Octocrab,
     owner: &str,
     name: &str,
+    subscribed_numbers: Option<&HashSet<u64>>,
 ) -> std::result::Result<Vec<RepoItem>, GithubError> {
     let label = format!("{owner}/{name}");
 
@@ -332,10 +385,16 @@ async fn fetch_items_inner(
         });
     }
 
+    retain_subscribed(&mut items, subscribed_numbers);
+
     // Sort: PRs first, then issues; within each group by number descending
     items.sort_by(item_cmp);
 
     Ok(items)
+}
+
+fn retain_subscribed(items: &mut Vec<RepoItem>, subscribed_numbers: Option<&HashSet<u64>>) {
+    items.retain(|item| subscribed_numbers.is_some_and(|numbers| numbers.contains(&item.number)));
 }
 
 #[cfg(test)]
@@ -435,6 +494,29 @@ mod tests {
     fn split_repo_many_slashes() {
         // splitn(2) gives ("a", "b/c") — name contains a slash, which is fine
         assert_eq!(split_repo("a/b/c"), Some(("a", "b/c")));
+    }
+
+    #[test]
+    fn subscribed_index_and_filter_keep_only_matching_repo_items() {
+        let subscribed = index_subscribed_items(vec![
+            SubscribedIssue {
+                number: 7,
+                repository_url: "https://api.github.com/repos/Acme/Widget".into(),
+            },
+            SubscribedIssue {
+                number: 99,
+                repository_url: "https://api.github.com/users/octocat".into(),
+            },
+        ]);
+        let mut items = vec![
+            make_item(ItemKind::Issue, 7),
+            make_item(ItemKind::PullRequest, 9),
+        ];
+
+        retain_subscribed(&mut items, subscribed.get("acme/widget"));
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].number, 7);
     }
 
     #[test]

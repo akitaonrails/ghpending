@@ -6,7 +6,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use octocrab::Octocrab;
 use tokio::time::{self, timeout};
 
-use crate::github::{RepoError, RepoResult, RepoStatus};
+use crate::github::{RepoError, RepoResult, RepoStatus, SubscribedItems};
 use crate::theme::Theme;
 use crate::{config, display, github};
 
@@ -30,7 +30,18 @@ pub async fn run(crab: &Octocrab, theme: &Theme) -> Result<()> {
     spinner.set_message("Fetching…");
     spinner.enable_steady_tick(Duration::from_millis(100));
 
-    let results = fetch_repos(crab, &cfg.repos).await;
+    let subscribed = match timeout(FETCH_TIMEOUT, github::fetch_subscribed_items(crab)).await {
+        Ok(Ok(subscribed)) => subscribed,
+        Ok(Err(error)) => {
+            spinner.finish_and_clear();
+            return Err(error);
+        }
+        Err(_) => {
+            spinner.finish_and_clear();
+            anyhow::bail!("listing subscribed issues and pull requests timed out after 30s");
+        }
+    };
+    let results = fetch_repos(crab, &cfg.repos, &subscribed).await;
 
     spinner.finish_and_clear();
 
@@ -44,14 +55,24 @@ pub async fn run(crab: &Octocrab, theme: &Theme) -> Result<()> {
     Ok(())
 }
 
-async fn fetch_repos(crab: &Octocrab, repos: &[String]) -> Vec<RepoResult> {
+async fn fetch_repos(
+    crab: &Octocrab,
+    repos: &[String],
+    subscribed: &SubscribedItems,
+) -> Vec<RepoResult> {
     let mut results = vec![None; repos.len()];
     let mut in_flight = FuturesUnordered::new();
     let mut next = 0;
 
     while next < repos.len() && in_flight.len() < MAX_CONCURRENT_FETCHES {
         let repo = repos[next].clone();
-        in_flight.push(fetch_repo_with_timeout(crab, next, repo));
+        let subscribed_numbers = subscribed.get(&repo.to_ascii_lowercase());
+        in_flight.push(fetch_repo_with_timeout(
+            crab,
+            next,
+            repo,
+            subscribed_numbers,
+        ));
         next += 1;
     }
 
@@ -66,7 +87,13 @@ async fn fetch_repos(crab: &Octocrab, repos: &[String]) -> Vec<RepoResult> {
 
                 if next < repos.len() {
                     let repo = repos[next].clone();
-                    in_flight.push(fetch_repo_with_timeout(crab, next, repo));
+                    let subscribed_numbers = subscribed.get(&repo.to_ascii_lowercase());
+                    in_flight.push(fetch_repo_with_timeout(
+                        crab,
+                        next,
+                        repo,
+                        subscribed_numbers,
+                    ));
                     next += 1;
                 }
             }
@@ -84,8 +111,14 @@ async fn fetch_repo_with_timeout(
     crab: &Octocrab,
     index: usize,
     repo: String,
+    subscribed_numbers: Option<&std::collections::HashSet<u64>>,
 ) -> (usize, RepoResult) {
-    let result = match timeout(FETCH_TIMEOUT, github::fetch_repo_items(crab, &repo)).await {
+    let result = match timeout(
+        FETCH_TIMEOUT,
+        github::fetch_repo_items(crab, &repo, subscribed_numbers),
+    )
+    .await
+    {
         Ok(result) => result,
         Err(_) => timeout_result(repo),
     };
