@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -13,7 +14,12 @@ use crate::{config, display, github};
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONCURRENT_FETCHES: usize = 4;
 
-pub async fn run(crab: &Octocrab, theme: &Theme, limit: Option<usize>) -> Result<()> {
+pub async fn run(
+    crab: &Octocrab,
+    theme: &Theme,
+    limit: Option<usize>,
+    subscribed_only: bool,
+) -> Result<()> {
     let cfg = config::load()?;
 
     if cfg.repos.is_empty() {
@@ -30,18 +36,26 @@ pub async fn run(crab: &Octocrab, theme: &Theme, limit: Option<usize>) -> Result
     spinner.set_message("Fetching…");
     spinner.enable_steady_tick(Duration::from_millis(100));
 
-    let subscribed = match timeout(FETCH_TIMEOUT, github::fetch_subscribed_items(crab)).await {
-        Ok(Ok(subscribed)) => subscribed,
-        Ok(Err(error)) => {
-            spinner.finish_and_clear();
-            return Err(error);
-        }
-        Err(_) => {
-            spinner.finish_and_clear();
-            anyhow::bail!("listing subscribed issues and pull requests timed out after 30s");
-        }
+    let subscribed = if subscribed_only {
+        Some(
+            match timeout(FETCH_TIMEOUT, github::fetch_subscribed_items(crab)).await {
+                Ok(Ok(subscribed)) => subscribed,
+                Ok(Err(error)) => {
+                    spinner.finish_and_clear();
+                    return Err(error);
+                }
+                Err(_) => {
+                    spinner.finish_and_clear();
+                    anyhow::bail!(
+                        "listing subscribed issues and pull requests timed out after 30s"
+                    );
+                }
+            },
+        )
+    } else {
+        None
     };
-    let results = fetch_repos(crab, &cfg.repos, &subscribed).await;
+    let results = fetch_repos(crab, &cfg.repos, subscribed.as_ref()).await;
 
     spinner.finish_and_clear();
 
@@ -58,15 +72,18 @@ pub async fn run(crab: &Octocrab, theme: &Theme, limit: Option<usize>) -> Result
 async fn fetch_repos(
     crab: &Octocrab,
     repos: &[String],
-    subscribed: &SubscribedItems,
+    subscribed: Option<&SubscribedItems>,
 ) -> Vec<RepoResult> {
+    let empty_subscriptions = HashSet::new();
     let mut results = vec![None; repos.len()];
     let mut in_flight = FuturesUnordered::new();
     let mut next = 0;
 
     while next < repos.len() && in_flight.len() < MAX_CONCURRENT_FETCHES {
         let repo = repos[next].clone();
-        let subscribed_numbers = subscribed.get(&repo.to_ascii_lowercase());
+        let repo_key = repo.to_ascii_lowercase();
+        let subscribed_numbers =
+            subscribed.map(|items| items.get(&repo_key).unwrap_or(&empty_subscriptions));
         in_flight.push(fetch_repo_with_timeout(
             crab,
             next,
@@ -87,7 +104,9 @@ async fn fetch_repos(
 
                 if next < repos.len() {
                     let repo = repos[next].clone();
-                    let subscribed_numbers = subscribed.get(&repo.to_ascii_lowercase());
+                    let repo_key = repo.to_ascii_lowercase();
+                    let subscribed_numbers = subscribed
+                        .map(|items| items.get(&repo_key).unwrap_or(&empty_subscriptions));
                     in_flight.push(fetch_repo_with_timeout(
                         crab,
                         next,
