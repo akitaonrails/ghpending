@@ -1,6 +1,6 @@
 # ghpending
 
-See open issues and pull requests across selected GitHub repos, at a glance.
+See open issues and pull requests across the GitHub repos you care about, at a glance.
 
 ![ghpending output](https://raw.githubusercontent.com/akitaonrails/ghpending/main/docs/screenshot.png)
 

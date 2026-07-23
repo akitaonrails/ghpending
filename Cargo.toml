@@ -2,7 +2,7 @@
 name = "ghpending"
 version = "0.4.2"
 edition = "2024"
-description = "CLI digest of open issues and pull requests across watched GitHub repos"
+description = "CLI to watch GitHub repos for open issues and pull requests at a glance"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/akitaonrails/ghpending"
