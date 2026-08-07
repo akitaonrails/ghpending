@@ -5,6 +5,7 @@ mod display;
 mod format;
 mod github;
 mod github_client;
+mod graphql;
 mod sort;
 mod theme;
 

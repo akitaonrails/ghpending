@@ -752,6 +752,7 @@ dependencies = [
  "octocrab",
  "owo-colors",
  "serde",
+ "serde_json",
  "terminal_size",
  "thiserror 2.0.18",
  "tokio",

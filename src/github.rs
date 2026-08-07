@@ -398,7 +398,10 @@ async fn fetch_items_inner(
     Ok(items)
 }
 
-fn retain_subscribed(items: &mut Vec<RepoItem>, subscribed_numbers: Option<&HashSet<u64>>) {
+pub(crate) fn retain_subscribed(
+    items: &mut Vec<RepoItem>,
+    subscribed_numbers: Option<&HashSet<u64>>,
+) {
     if let Some(numbers) = subscribed_numbers {
         items.retain(|item| numbers.contains(&item.number));
     }
