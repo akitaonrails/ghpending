@@ -1,19 +1,16 @@
-use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::Result;
-use futures::stream::{FuturesUnordered, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use octocrab::Octocrab;
-use tokio::time::{self, timeout};
+use tokio::time::timeout;
 
-use crate::github::{RepoError, RepoResult, RepoStatus, SubscribedItems};
+use crate::github::RepoStatus;
 use crate::sort::SortMode;
 use crate::theme::Theme;
-use crate::{config, display, github, sort};
+use crate::{config, display, github, graphql, sort};
 
-const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_CONCURRENT_FETCHES: usize = 4;
+const SUBSCRIBED_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub async fn run(
     crab: &Octocrab,
@@ -40,7 +37,12 @@ pub async fn run(
 
     let subscribed = if subscribed_only {
         Some(
-            match timeout(FETCH_TIMEOUT, github::fetch_subscribed_items(crab)).await {
+            match timeout(
+                SUBSCRIBED_FETCH_TIMEOUT,
+                github::fetch_subscribed_items(crab),
+            )
+            .await
+            {
                 Ok(Ok(subscribed)) => subscribed,
                 Ok(Err(error)) => {
                     spinner.finish_and_clear();
@@ -57,7 +59,7 @@ pub async fn run(
     } else {
         None
     };
-    let mut results = fetch_repos(crab, &cfg.repos, subscribed.as_ref()).await;
+    let mut results = graphql::fetch_repos_batched(crab, &cfg.repos, subscribed.as_ref()).await;
 
     spinner.finish_and_clear();
 
@@ -73,89 +75,7 @@ pub async fn run(
     Ok(())
 }
 
-async fn fetch_repos(
-    crab: &Octocrab,
-    repos: &[String],
-    subscribed: Option<&SubscribedItems>,
-) -> Vec<RepoResult> {
-    let empty_subscriptions = HashSet::new();
-    let mut results = vec![None; repos.len()];
-    let mut in_flight = FuturesUnordered::new();
-    let mut next = 0;
-
-    while next < repos.len() && in_flight.len() < MAX_CONCURRENT_FETCHES {
-        let repo = repos[next].clone();
-        let repo_key = repo.to_ascii_lowercase();
-        let subscribed_numbers =
-            subscribed.map(|items| items.get(&repo_key).unwrap_or(&empty_subscriptions));
-        in_flight.push(fetch_repo_with_timeout(
-            crab,
-            next,
-            repo,
-            subscribed_numbers,
-        ));
-        next += 1;
-    }
-
-    let deadline = time::sleep(FETCH_TIMEOUT);
-    tokio::pin!(deadline);
-
-    while !in_flight.is_empty() {
-        tokio::select! {
-            _ = &mut deadline => break,
-            Some((index, result)) = in_flight.next() => {
-                results[index] = Some(result);
-
-                if next < repos.len() {
-                    let repo = repos[next].clone();
-                    let repo_key = repo.to_ascii_lowercase();
-                    let subscribed_numbers = subscribed
-                        .map(|items| items.get(&repo_key).unwrap_or(&empty_subscriptions));
-                    in_flight.push(fetch_repo_with_timeout(
-                        crab,
-                        next,
-                        repo,
-                        subscribed_numbers,
-                    ));
-                    next += 1;
-                }
-            }
-        }
-    }
-
-    results
-        .into_iter()
-        .enumerate()
-        .map(|(index, result)| result.unwrap_or_else(|| timeout_result(repos[index].clone())))
-        .collect()
-}
-
-async fn fetch_repo_with_timeout(
-    crab: &Octocrab,
-    index: usize,
-    repo: String,
-    subscribed_numbers: Option<&std::collections::HashSet<u64>>,
-) -> (usize, RepoResult) {
-    let result = match timeout(
-        FETCH_TIMEOUT,
-        github::fetch_repo_items(crab, &repo, subscribed_numbers),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => timeout_result(repo),
-    };
-    (index, result)
-}
-
-fn timeout_result(repo: String) -> RepoResult {
-    RepoResult {
-        repo,
-        status: RepoStatus::Error(RepoError::Timeout),
-    }
-}
-
-pub(crate) fn all_repo_fetches_failed(results: &[RepoResult]) -> bool {
+pub(crate) fn all_repo_fetches_failed(results: &[crate::github::RepoResult]) -> bool {
     !results.is_empty()
         && results
             .iter()
@@ -165,6 +85,7 @@ pub(crate) fn all_repo_fetches_failed(results: &[RepoResult]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::github::{RepoError, RepoResult};
 
     #[test]
     fn all_repo_fetches_failed_requires_every_result_to_be_error() {
