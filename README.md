@@ -66,6 +66,7 @@ ghpending add --all          # pick from every repo your token can reach (privat
 ghpending        # print the digest
 ghpending --limit 20  # cap the digest at 20 items, distributed proportionally per repo
 ghpending --subscribed  # show only issues and PRs you are subscribed to
+ghpending --sort count  # order repos by open item count instead of activity
 ghpending list   # show tracked repos
 ghpending rm     # remove repos from the list
 ```
@@ -73,7 +74,7 @@ ghpending rm     # remove repos from the list
 - `ghpending add` — lists repos and lets you select which to track. The username is saved so subsequent `add` runs skip the prompt. Pass `--user <name>` to switch to a different user/org without editing the config; it replaces the saved one.
   - **Private repos:** with a `GITHUB_TOKEN` that has the `repo` scope, `add` includes private repos automatically when the target is your own account or an org you belong to. For a third-party user only their public repos are visible.
   - `--all` lists every repo your token can reach — owned, collaborator and organization-member, private included — in a single picker, ignoring the saved user. Use it to grab private repos you collaborate on across different owners.
-- `ghpending` — fetches tracked repos concurrently and prints their open issues and pull requests. Pass `--subscribed` to show only items that the authenticated user is subscribed to. Pass `--limit <count>` to cap the total number of displayed items; each repository receives a proportional share while preserving its existing item order.
+- `ghpending` — fetches tracked repos concurrently and prints their open issues and pull requests. Pass `--subscribed` to show only items that the authenticated user is subscribed to. Pass `--limit <count>` to cap the total number of displayed items; each repository receives a proportional share while preserving its existing item order. Pass `--sort <mode>` to control repo order: `activity` (default, most recently updated open item first), `name` (alphabetical, the config-file order), `count` (most open items first) or `stale` (most neglected repo — oldest-updated open item — first).
 - `ghpending list` — prints the repos currently in your watch list.
 - `ghpending rm` — opens an interactive menu to select repos to remove from tracking.
 
@@ -109,9 +110,10 @@ Example:
 ```toml
 user = "akitaonrails"
 repos = ["ratatui-org/ratatui", "tokio-rs/tokio"]
+sort = "name"
 ```
 
-Run `ghpending add --user <name>` to change the `user` field, or edit the file directly to reorder repos.
+Run `ghpending add --user <name>` to change the `user` field, or edit the file directly to reorder repos. Set `sort` to `activity`, `name`, `count` or `stale` to change the default repo order without passing `--sort` each time.
 
 ## Themes
 

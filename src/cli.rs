@@ -17,6 +17,9 @@ pub struct Cli {
     /// Only show items you are subscribed to (requires GITHUB_TOKEN)
     #[arg(long)]
     pub subscribed: bool,
+    /// Repo sort order (activity, name, count, stale)
+    #[arg(long, value_name = "MODE")]
+    pub sort: Option<String>,
 }
 
 #[derive(Subcommand)]

@@ -8,8 +8,9 @@ use octocrab::Octocrab;
 use tokio::time::{self, timeout};
 
 use crate::github::{RepoError, RepoResult, RepoStatus, SubscribedItems};
+use crate::sort::SortMode;
 use crate::theme::Theme;
-use crate::{config, display, github};
+use crate::{config, display, github, sort};
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONCURRENT_FETCHES: usize = 4;
@@ -19,6 +20,7 @@ pub async fn run(
     theme: &Theme,
     limit: Option<usize>,
     subscribed_only: bool,
+    sort_mode: SortMode,
 ) -> Result<()> {
     let cfg = config::load()?;
 
@@ -55,9 +57,11 @@ pub async fn run(
     } else {
         None
     };
-    let results = fetch_repos(crab, &cfg.repos, subscribed.as_ref()).await;
+    let mut results = fetch_repos(crab, &cfg.repos, subscribed.as_ref()).await;
 
     spinner.finish_and_clear();
+
+    sort::sort_results(&mut results, sort_mode);
 
     let digest = display::render_digest(&results, theme, limit);
     print!("{digest}");

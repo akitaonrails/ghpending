@@ -5,11 +5,13 @@ mod display;
 mod format;
 mod github;
 mod github_client;
+mod sort;
 mod theme;
 
 use anyhow::{Result, bail};
 use clap::Parser;
 use cli::{Cli, Commands};
+use sort::SortMode;
 use theme::Theme;
 
 #[tokio::main]
@@ -20,6 +22,9 @@ async fn main() -> Result<()> {
     }
     if cli.subscribed && cli.command.is_some() {
         bail!("--subscribed can only be used when rendering the digest");
+    }
+    if cli.sort.is_some() && cli.command.is_some() {
+        bail!("--sort can only be used when rendering the digest");
     }
 
     let cfg = config::load()?;
@@ -41,13 +46,29 @@ async fn main() -> Result<()> {
         ),
     };
 
+    let sort_name = cli
+        .sort
+        .as_deref()
+        .or(cfg.sort.as_deref())
+        .unwrap_or("activity");
+    let sort_mode = match SortMode::by_name(sort_name) {
+        Some(mode) => mode,
+        None => bail!(
+            "unknown sort mode: {sort_name} (available: {})",
+            sort::SORT_NAMES.join(", ")
+        ),
+    };
+
     let crab = github_client::build()?;
 
     match &cli.command {
         Some(Commands::List) => commands::list::run()?,
         Some(Commands::Rm) => commands::remove::run()?,
         Some(Commands::Add { user, all }) => commands::add::run(&crab, user.clone(), *all).await?,
-        None => commands::digest::run(&crab, &resolved_theme, cli.limit, cli.subscribed).await?,
+        None => {
+            commands::digest::run(&crab, &resolved_theme, cli.limit, cli.subscribed, sort_mode)
+                .await?
+        }
     }
 
     Ok(())

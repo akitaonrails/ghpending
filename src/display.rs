@@ -188,6 +188,7 @@ mod tests {
             number,
             title: title.into(),
             created_at,
+            updated_at: created_at,
             author: "testuser".into(),
             pr_draft: None,
         }
@@ -199,6 +200,7 @@ mod tests {
             number,
             title: title.into(),
             created_at: Utc::now(),
+            updated_at: Utc::now(),
             author: "testuser".into(),
             pr_draft: draft,
         }

@@ -10,6 +10,8 @@ pub struct Config {
     pub repos: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort: Option<String>,
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -60,6 +62,7 @@ mod tests {
             user: Some("octocat".into()),
             repos: vec!["owner/repo".into(), "foo/bar".into()],
             theme: None,
+            sort: None,
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
@@ -73,6 +76,7 @@ mod tests {
             user: None,
             repos: vec!["owner/repo".into()],
             theme: None,
+            sort: None,
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
@@ -86,6 +90,7 @@ mod tests {
         assert!(cfg.user.is_none());
         assert!(cfg.repos.is_empty());
         assert!(cfg.theme.is_none());
+        assert!(cfg.sort.is_none());
     }
 
     #[test]
@@ -94,6 +99,7 @@ mod tests {
             user: Some("octocat".into()),
             repos: vec!["owner/repo".into()],
             theme: Some("nerv".into()),
+            sort: None,
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
@@ -106,10 +112,38 @@ mod tests {
             user: None,
             repos: vec![],
             theme: None,
+            sort: None,
         };
         let s = toml::to_string(&cfg).unwrap();
         assert!(!s.contains("theme"));
         let back: Config = toml::from_str(&s).unwrap();
         assert!(back.theme.is_none());
+    }
+
+    #[test]
+    fn round_trip_with_sort() {
+        let cfg = Config {
+            user: Some("octocat".into()),
+            repos: vec!["owner/repo".into()],
+            theme: None,
+            sort: Some("name".into()),
+        };
+        let s = toml::to_string(&cfg).unwrap();
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(back.sort.as_deref(), Some("name"));
+    }
+
+    #[test]
+    fn round_trip_sort_none_omitted() {
+        let cfg = Config {
+            user: None,
+            repos: vec![],
+            theme: None,
+            sort: None,
+        };
+        let s = toml::to_string(&cfg).unwrap();
+        assert!(!s.contains("sort"));
+        let back: Config = toml::from_str(&s).unwrap();
+        assert!(back.sort.is_none());
     }
 }
