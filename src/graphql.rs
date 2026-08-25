@@ -131,12 +131,12 @@ pub async fn fetch_repos_batched(
         }
     }
 
-    for (original_index, repo) in overflow {
-        let empty = std::collections::HashSet::new();
-        let key = repo.to_ascii_lowercase();
-        let subscribed_numbers = subscribed.map(|items| items.get(&key).unwrap_or(&empty));
-        let result = github::fetch_repo_items(crab, &repo, subscribed_numbers).await;
-        results[original_index] = Some(result);
+    if !overflow.is_empty() {
+        let overflow_repos: Vec<String> = overflow.iter().map(|(_, repo)| repo.clone()).collect();
+        let overflow_results = github::fetch_repos_rest(crab, &overflow_repos, subscribed).await;
+        for ((original_index, _), result) in overflow.into_iter().zip(overflow_results) {
+            results[original_index] = Some(result);
+        }
     }
 
     results
@@ -166,7 +166,7 @@ async fn fetch_chunk(
     .await
     {
         Ok(Ok(envelope)) => envelope,
-        Ok(Err(e)) => return error_for_all(chunk, RepoError::Api(e.to_string())),
+        Ok(Err(e)) => return error_for_all(chunk, RepoError::Api(github::describe_api_error(&e))),
         Err(_) => return error_for_all(chunk, RepoError::Timeout),
     };
 
@@ -202,8 +202,20 @@ fn parse_envelope(
     envelope: GraphQlEnvelope,
     subscribed: Option<&SubscribedItems>,
 ) -> Vec<ChunkItem> {
+    let has_errors = envelope
+        .errors
+        .as_ref()
+        .is_some_and(|errors| !errors.is_empty());
+    if envelope.data.is_none() && !has_errors {
+        return error_for_all(chunk, RepoError::Api("empty GraphQL response".to_owned()));
+    }
+
     let mut not_found: HashMap<String, ()> = HashMap::new();
     let mut errored: HashMap<String, String> = HashMap::new();
+    // Errors without a `path` (rate limiting, query complexity, auth-level
+    // failures) apply to the whole chunk, not a single repo alias — every
+    // repo would otherwise fall through to a misleading NotFound.
+    let mut pathless_messages: Vec<String> = Vec::new();
 
     for error in envelope.errors.into_iter().flatten() {
         let Some(alias) = error
@@ -212,6 +224,7 @@ fn parse_envelope(
             .and_then(|p| p.first())
             .and_then(|v| v.as_str())
         else {
+            pathless_messages.push(error.message.clone());
             continue;
         };
         let alias = alias.to_owned();
@@ -220,6 +233,10 @@ fn parse_envelope(
         } else {
             errored.entry(alias).or_insert(error.message.clone());
         }
+    }
+
+    if !pathless_messages.is_empty() {
+        return error_for_all(chunk, RepoError::Api(pathless_messages.join("; ")));
     }
 
     let data = envelope.data.unwrap_or_default();
@@ -453,6 +470,28 @@ mod tests {
         };
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].number, 1);
+    }
+
+    #[test]
+    fn pathless_error_marks_every_repo_in_chunk_as_error_not_not_found() {
+        let chunk = vec![valid_repo(0, "acme/widget"), valid_repo(1, "acme/gadget")];
+        let envelope: GraphQlEnvelope = serde_json::from_value(serde_json::json!({
+            "errors": [
+                { "type": "RATE_LIMITED", "message": "API rate limit exceeded" }
+            ]
+        }))
+        .unwrap();
+
+        let result = parse_envelope(&chunk, envelope, None);
+        assert_eq!(result.len(), 2);
+        for item in &result {
+            assert!(
+                matches!(&item.status, RepoStatus::Error(RepoError::Api(m)) if m.contains("rate limit")),
+                "expected rate-limit error, got {:?}",
+                item.status
+            );
+            assert!(!matches!(item.status, RepoStatus::NotFound));
+        }
     }
 
     #[test]

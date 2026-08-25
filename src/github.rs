@@ -1,11 +1,17 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use futures::stream::{FuturesUnordered, StreamExt};
 use octocrab::Octocrab;
 use serde::Deserialize;
 use thiserror::Error;
+use tokio::time::{self, timeout};
+
+const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_CONCURRENT_FETCHES: usize = 4;
 
 #[derive(Debug, Clone)]
 pub struct RepoItem {
@@ -66,6 +72,22 @@ fn map_github_err<T>(
             Err(GithubError::NotFound(repo_label.to_owned()))
         }
         Err(e) => Err(GithubError::Api(e)),
+    }
+}
+
+/// Turns an octocrab error into a message with real detail instead of
+/// octocrab's `Display`, which collapses `Error::GitHub` down to just
+/// "GitHub".
+pub(crate) fn describe_api_error(e: &octocrab::Error) -> String {
+    match e {
+        octocrab::Error::GitHub { source, .. } => {
+            let mut message = format!("HTTP {} {}", source.status_code, source.message);
+            if source.status_code.as_u16() == 401 {
+                message.push_str(" — set GITHUB_TOKEN");
+            }
+            message
+        }
+        other => other.to_string(),
     }
 }
 
@@ -315,8 +337,96 @@ pub async fn fetch_repo_items(
         },
         Err(GithubError::Api(e)) => RepoResult {
             repo: repo.to_owned(),
-            status: RepoStatus::Error(RepoError::Api(e.to_string())),
+            status: RepoStatus::Error(RepoError::Api(describe_api_error(&e))),
         },
+    }
+}
+
+/// Fetches every repo over REST, capped at `MAX_CONCURRENT_FETCHES`
+/// in-flight requests and an overall `FETCH_TIMEOUT` deadline for the whole
+/// batch (repos still in flight when the deadline hits are reported as
+/// timeouts). Used when there's no `GITHUB_TOKEN` — GraphQL has no
+/// anonymous mode — and as the overflow fallback for repos whose open
+/// issues/PRs exceed a single GraphQL page.
+pub(crate) async fn fetch_repos_rest(
+    crab: &Octocrab,
+    repos: &[String],
+    subscribed: Option<&SubscribedItems>,
+) -> Vec<RepoResult> {
+    let empty_subscriptions = HashSet::new();
+    let mut results = vec![None; repos.len()];
+    let mut in_flight = FuturesUnordered::new();
+    let mut next = 0;
+
+    while next < repos.len() && in_flight.len() < MAX_CONCURRENT_FETCHES {
+        let repo = repos[next].clone();
+        let repo_key = repo.to_ascii_lowercase();
+        let subscribed_numbers =
+            subscribed.map(|items| items.get(&repo_key).unwrap_or(&empty_subscriptions));
+        in_flight.push(fetch_repo_with_timeout(
+            crab,
+            next,
+            repo,
+            subscribed_numbers,
+        ));
+        next += 1;
+    }
+
+    let deadline = time::sleep(FETCH_TIMEOUT);
+    tokio::pin!(deadline);
+
+    while !in_flight.is_empty() {
+        tokio::select! {
+            _ = &mut deadline => break,
+            Some((index, result)) = in_flight.next() => {
+                results[index] = Some(result);
+
+                if next < repos.len() {
+                    let repo = repos[next].clone();
+                    let repo_key = repo.to_ascii_lowercase();
+                    let subscribed_numbers = subscribed
+                        .map(|items| items.get(&repo_key).unwrap_or(&empty_subscriptions));
+                    in_flight.push(fetch_repo_with_timeout(
+                        crab,
+                        next,
+                        repo,
+                        subscribed_numbers,
+                    ));
+                    next += 1;
+                }
+            }
+        }
+    }
+
+    results
+        .into_iter()
+        .enumerate()
+        .map(|(index, result)| result.unwrap_or_else(|| timeout_result(repos[index].clone())))
+        .collect()
+}
+
+async fn fetch_repo_with_timeout(
+    crab: &Octocrab,
+    index: usize,
+    repo: String,
+    subscribed_numbers: Option<&HashSet<u64>>,
+) -> (usize, RepoResult) {
+    let result = match timeout(
+        FETCH_TIMEOUT,
+        fetch_repo_items(crab, &repo, subscribed_numbers),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => timeout_result(repo),
+    };
+    (index, result)
+}
+
+fn timeout_result(repo: String) -> RepoResult {
+    RepoResult {
+        repo,
+        status: RepoStatus::Error(RepoError::Timeout),
     }
 }
 

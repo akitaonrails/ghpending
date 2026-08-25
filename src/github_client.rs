@@ -85,7 +85,7 @@ fn build_proxied(token: Option<&str>, proxy_uri: Uri) -> Result<Octocrab> {
         .build()?)
 }
 
-fn github_token() -> Option<String> {
+pub(crate) fn github_token() -> Option<String> {
     std::env::var("GITHUB_TOKEN")
         .ok()
         .map(|token| token.trim().to_owned())

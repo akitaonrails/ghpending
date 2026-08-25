@@ -8,7 +8,7 @@ use tokio::time::timeout;
 use crate::github::RepoStatus;
 use crate::sort::SortMode;
 use crate::theme::Theme;
-use crate::{config, display, github, graphql, sort};
+use crate::{config, display, github, github_client, graphql, sort};
 
 const SUBSCRIBED_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -59,7 +59,11 @@ pub async fn run(
     } else {
         None
     };
-    let mut results = graphql::fetch_repos_batched(crab, &cfg.repos, subscribed.as_ref()).await;
+    let mut results = if use_graphql(github_client::github_token().is_some()) {
+        graphql::fetch_repos_batched(crab, &cfg.repos, subscribed.as_ref()).await
+    } else {
+        github::fetch_repos_rest(crab, &cfg.repos, subscribed.as_ref()).await
+    };
 
     spinner.finish_and_clear();
 
@@ -75,6 +79,13 @@ pub async fn run(
     Ok(())
 }
 
+/// GitHub's GraphQL endpoint has no anonymous mode, so without a token we
+/// fall back to REST (which does support unauthenticated, rate-limited
+/// access) instead of failing every repo fetch outright.
+fn use_graphql(has_token: bool) -> bool {
+    has_token
+}
+
 pub(crate) fn all_repo_fetches_failed(results: &[crate::github::RepoResult]) -> bool {
     !results.is_empty()
         && results
@@ -86,6 +97,12 @@ pub(crate) fn all_repo_fetches_failed(results: &[crate::github::RepoResult]) -> 
 mod tests {
     use super::*;
     use crate::github::{RepoError, RepoResult};
+
+    #[test]
+    fn use_graphql_requires_a_token() {
+        assert!(use_graphql(true));
+        assert!(!use_graphql(false));
+    }
 
     #[test]
     fn all_repo_fetches_failed_requires_every_result_to_be_error() {

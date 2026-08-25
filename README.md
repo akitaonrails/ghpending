@@ -80,7 +80,7 @@ ghpending rm     # remove repos from the list
 
 ## Authentication
 
-`GITHUB_TOKEN` is optional. Without one, public repository access is subject to GitHub's 60 requests/hour limit. Set a token for a 5,000 requests/hour limit and access to private repositories:
+`GITHUB_TOKEN` is optional. Without one, public repository access is subject to GitHub's 60 requests/hour limit. Set a token for a 5,000 requests/hour limit, access to private repositories, and faster digests (all repos are fetched in one batched GraphQL request instead of two REST calls each):
 
 ```sh
 GITHUB_TOKEN=$(gh auth token) ghpending
