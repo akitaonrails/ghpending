@@ -58,7 +58,12 @@ fn build_proxied(token: Option<&str>, proxy_uri: Uri) -> Result<Octocrab> {
         auth: None,
         connector,
     };
-    let https = socks.with_tls().context("creating SOCKS TLS connector")?;
+    let https = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_native_roots()
+        .context("loading native TLS roots")?
+        .https_only()
+        .enable_http1()
+        .wrap_connector(socks);
 
     let timeout_builder = OctocrabBuilder::default()
         .set_connect_timeout(Some(web_time::Duration::from_secs(
