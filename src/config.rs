@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -12,6 +13,14 @@ pub struct Config {
     pub theme: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort: Option<String>,
+    /// Tracked fork name -> upstream name, auto-managed: the GraphQL path
+    /// refreshes it each run, the REST path populates it on first sight of a
+    /// repo. Edit or delete entries to force re-detection. A value of `""`
+    /// means "checked, confirmed not a fork" rather than "unknown" (a
+    /// missing entry), so `skip_serializing_if` is deliberately omitted — an
+    /// all-non-fork map is still meaningful and must round-trip.
+    #[serde(default)]
+    pub forks: HashMap<String, String>,
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -63,6 +72,7 @@ mod tests {
             repos: vec!["owner/repo".into(), "foo/bar".into()],
             theme: None,
             sort: None,
+            forks: HashMap::new(),
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
@@ -77,6 +87,7 @@ mod tests {
             repos: vec!["owner/repo".into()],
             theme: None,
             sort: None,
+            forks: HashMap::new(),
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
@@ -91,6 +102,7 @@ mod tests {
         assert!(cfg.repos.is_empty());
         assert!(cfg.theme.is_none());
         assert!(cfg.sort.is_none());
+        assert!(cfg.forks.is_empty());
     }
 
     #[test]
@@ -100,6 +112,7 @@ mod tests {
             repos: vec!["owner/repo".into()],
             theme: Some("nerv".into()),
             sort: None,
+            forks: HashMap::new(),
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
@@ -113,6 +126,7 @@ mod tests {
             repos: vec![],
             theme: None,
             sort: None,
+            forks: HashMap::new(),
         };
         let s = toml::to_string(&cfg).unwrap();
         assert!(!s.contains("theme"));
@@ -127,6 +141,7 @@ mod tests {
             repos: vec!["owner/repo".into()],
             theme: None,
             sort: Some("name".into()),
+            forks: HashMap::new(),
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
@@ -140,10 +155,50 @@ mod tests {
             repos: vec![],
             theme: None,
             sort: None,
+            forks: HashMap::new(),
         };
         let s = toml::to_string(&cfg).unwrap();
         assert!(!s.contains("sort"));
         let back: Config = toml::from_str(&s).unwrap();
         assert!(back.sort.is_none());
+    }
+
+    #[test]
+    fn round_trip_with_forks() {
+        let mut forks = HashMap::new();
+        forks.insert(
+            "akitaonrails/omarchy".to_owned(),
+            "omacom/omarchy".to_owned(),
+        );
+        forks.insert("acme/normal".to_owned(), String::new());
+        let cfg = Config {
+            user: Some("octocat".into()),
+            repos: vec!["akitaonrails/omarchy".into(), "acme/normal".into()],
+            theme: None,
+            sort: None,
+            forks,
+        };
+        let s = toml::to_string(&cfg).unwrap();
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(
+            back.forks.get("akitaonrails/omarchy").map(String::as_str),
+            Some("omacom/omarchy")
+        );
+        // "" (known non-fork) must round-trip too, not be dropped.
+        assert_eq!(back.forks.get("acme/normal").map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn round_trip_forks_empty_map() {
+        let cfg = Config {
+            user: None,
+            repos: vec![],
+            theme: None,
+            sort: None,
+            forks: HashMap::new(),
+        };
+        let s = toml::to_string(&cfg).unwrap();
+        let back: Config = toml::from_str(&s).unwrap();
+        assert!(back.forks.is_empty());
     }
 }

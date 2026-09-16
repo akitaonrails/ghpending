@@ -67,8 +67,19 @@ fn render_inner_limited(
         }
         shown += 1;
 
-        let repo_colored = paint(&result.repo, color, theme.repo);
-        body.push_str(&format!("━━ {repo_colored}\n"));
+        let (header_name, fork_suffix): (&str, Option<String>) = match &result.upstream {
+            Some(upstream) => (
+                upstream.as_str(),
+                Some(format!("  (your items · via fork {})", result.repo)),
+            ),
+            None => (result.repo.as_str(), None),
+        };
+        let repo_colored = paint(header_name, color, theme.repo);
+        body.push_str(&format!("━━ {repo_colored}"));
+        if let Some(suffix) = &fork_suffix {
+            body.push_str(&paint(suffix, color, theme.meta));
+        }
+        body.push('\n');
 
         match &result.status {
             RepoStatus::NotFound => {
@@ -81,6 +92,7 @@ fn render_inner_limited(
             }
             RepoStatus::Items(items) => {
                 let title_max = if width > 20 { width - 20 } else { 10 };
+                let is_fork_view = result.upstream.is_some();
 
                 for item in items.iter().take(item_allocations[index]) {
                     let (kind_str, number_str, title_str) = match item.kind {
@@ -101,7 +113,19 @@ fn render_inner_limited(
                     body.push_str(&format!("  {kind_str}  {number_str}  {title_str}\n"));
 
                     let rel = relative_time(&item.created_at, &now);
-                    let mut meta = format!("opened {} ago by {}", rel, item.author);
+                    let mut meta = if is_fork_view {
+                        let rel_updated = relative_time(&item.updated_at, &now);
+                        format!(
+                            "opened {rel} ago · updated {rel_updated} ago · {} comments",
+                            item.comments.unwrap_or(0)
+                        )
+                    } else {
+                        format!("opened {rel} ago by {}", item.author)
+                    };
+                    if is_fork_view && let Some(decision) = &item.review_decision {
+                        meta.push_str(" · ");
+                        meta.push_str(decision);
+                    }
                     if let Some(state) = pr_state_label(item) {
                         meta.push_str(" · ");
                         meta.push_str(state);
@@ -191,6 +215,8 @@ mod tests {
             updated_at: created_at,
             author: "testuser".into(),
             pr_draft: None,
+            comments: None,
+            review_decision: None,
         }
     }
 
@@ -203,36 +229,58 @@ mod tests {
             updated_at: Utc::now(),
             author: "testuser".into(),
             pr_draft: draft,
+            comments: None,
+            review_decision: None,
+        }
+    }
+
+    fn make_fork_item(
+        kind: ItemKind,
+        number: u64,
+        title: &str,
+        comments: u64,
+        review_decision: Option<&str>,
+    ) -> RepoItem {
+        RepoItem {
+            kind,
+            number,
+            title: title.into(),
+            created_at: Utc::now() - chrono::Duration::days(3),
+            updated_at: Utc::now() - chrono::Duration::days(1),
+            author: "testuser".into(),
+            pr_draft: None,
+            comments: Some(comments),
+            review_decision: review_decision.map(str::to_owned),
         }
     }
 
     #[test]
     fn item_limit_is_proportional_without_distorting_summary() {
         let results = vec![
-            RepoResult {
-                repo: "a/large".into(),
-                status: RepoStatus::Items(
+            RepoResult::new(
+                "a/large".into(),
+                RepoStatus::Items(
                     (1..=5)
                         .map(|number| make_item(ItemKind::Issue, number, "large", 1))
                         .collect(),
                 ),
-            },
-            RepoResult {
-                repo: "b/medium".into(),
-                status: RepoStatus::Items(
+            ),
+            RepoResult::new(
+                "b/medium".into(),
+                RepoStatus::Items(
                     (1..=3)
                         .map(|number| make_item(ItemKind::Issue, number, "medium", 1))
                         .collect(),
                 ),
-            },
-            RepoResult {
-                repo: "c/small".into(),
-                status: RepoStatus::Items(
+            ),
+            RepoResult::new(
+                "c/small".into(),
+                RepoStatus::Items(
                     (1..=2)
                         .map(|number| make_item(ItemKind::Issue, number, "small", 1))
                         .collect(),
                 ),
-            },
+            ),
         ];
 
         assert_eq!(allocate_items(&results, Some(6)), vec![3, 2, 1]);
@@ -247,10 +295,10 @@ mod tests {
 
     #[test]
     fn zero_item_limit_hides_items_but_preserves_summary() {
-        let results = vec![RepoResult {
-            repo: "a/repo".into(),
-            status: RepoStatus::Items(vec![make_item(ItemKind::Issue, 1, "issue", 1)]),
-        }];
+        let results = vec![RepoResult::new(
+            "a/repo".into(),
+            RepoStatus::Items(vec![make_item(ItemKind::Issue, 1, "issue", 1)]),
+        )];
 
         let out = render_inner_limited(&results, &Theme::default_theme(), false, 80, Some(0));
 
@@ -265,10 +313,10 @@ mod tests {
 
     #[test]
     fn empty_repo_is_skipped_from_listing() {
-        let results = vec![RepoResult {
-            repo: "owner/empty".into(),
-            status: RepoStatus::Items(vec![]),
-        }];
+        let results = vec![RepoResult::new(
+            "owner/empty".into(),
+            RepoStatus::Items(vec![]),
+        )];
         let out = render_inner(&results, &Theme::default_theme(), false, 80);
         assert!(!out.contains("owner/empty"));
         assert!(!out.contains("nothing pending"));
@@ -277,10 +325,10 @@ mod tests {
 
     #[test]
     fn repo_not_found() {
-        let results = vec![RepoResult {
-            repo: "owner/missing".into(),
-            status: RepoStatus::NotFound,
-        }];
+        let results = vec![RepoResult::new(
+            "owner/missing".into(),
+            RepoStatus::NotFound,
+        )];
         let out = render_inner(&results, &Theme::default_theme(), false, 80);
         assert!(out.contains("owner/missing"));
         assert!(out.contains("not found or no access"));
@@ -288,10 +336,10 @@ mod tests {
 
     #[test]
     fn repo_error_renders_message() {
-        let results = vec![RepoResult {
-            repo: "owner/flaky".into(),
-            status: RepoStatus::Error(RepoError::Api("rate limited".into())),
-        }];
+        let results = vec![RepoResult::new(
+            "owner/flaky".into(),
+            RepoStatus::Error(RepoError::Api("rate limited".into())),
+        )];
         let out = render_inner(&results, &Theme::default_theme(), false, 80);
         assert!(out.contains("owner/flaky"));
         assert!(out.contains("error:"));
@@ -300,13 +348,13 @@ mod tests {
 
     #[test]
     fn normal_items_rendered() {
-        let results = vec![RepoResult {
-            repo: "ratatui-org/ratatui".into(),
-            status: RepoStatus::Items(vec![
+        let results = vec![RepoResult::new(
+            "ratatui-org/ratatui".into(),
+            RepoStatus::Items(vec![
                 make_item(ItemKind::PullRequest, 1842, "Fix overflow in Table", 2),
                 make_item(ItemKind::Issue, 1840, "Crash on empty Paragraph", 0),
             ]),
-        }];
+        )];
         let out = render_inner(&results, &Theme::default_theme(), false, 80);
         assert!(out.contains("ratatui-org/ratatui"));
         assert!(out.contains("PR"));
@@ -319,14 +367,14 @@ mod tests {
 
     #[test]
     fn pull_request_draft_status_is_rendered_subtly() {
-        let results = vec![RepoResult {
-            repo: "owner/repo".into(),
-            status: RepoStatus::Items(vec![
+        let results = vec![RepoResult::new(
+            "owner/repo".into(),
+            RepoStatus::Items(vec![
                 make_pr(3, "Work in progress", Some(true)),
                 make_pr(2, "Ready for review", Some(false)),
                 make_pr(1, "Unknown state", None),
             ]),
-        }];
+        )];
 
         let out = render_inner(&results, &Theme::default_theme(), false, 80);
         assert!(out.contains("opened just now ago by testuser · draft"));
@@ -336,10 +384,10 @@ mod tests {
 
     #[test]
     fn header_is_just_prefix_and_name() {
-        let results = vec![RepoResult {
-            repo: "a/b".into(),
-            status: RepoStatus::Items(vec![make_item(ItemKind::Issue, 1, "x", 0)]),
-        }];
+        let results = vec![RepoResult::new(
+            "a/b".into(),
+            RepoStatus::Items(vec![make_item(ItemKind::Issue, 1, "x", 0)]),
+        )];
         let out = render_inner(&results, &Theme::default_theme(), false, 80);
         let header_line = out.lines().find(|l| l.contains("━━")).unwrap();
         assert_eq!(header_line, "━━ a/b");
@@ -348,14 +396,14 @@ mod tests {
     #[test]
     fn two_repos_separated_by_blank_line() {
         let results = vec![
-            RepoResult {
-                repo: "a/b".into(),
-                status: RepoStatus::Items(vec![make_item(ItemKind::Issue, 1, "x", 0)]),
-            },
-            RepoResult {
-                repo: "c/d".into(),
-                status: RepoStatus::Items(vec![make_item(ItemKind::Issue, 2, "y", 0)]),
-            },
+            RepoResult::new(
+                "a/b".into(),
+                RepoStatus::Items(vec![make_item(ItemKind::Issue, 1, "x", 0)]),
+            ),
+            RepoResult::new(
+                "c/d".into(),
+                RepoStatus::Items(vec![make_item(ItemKind::Issue, 2, "y", 0)]),
+            ),
         ];
         let out = render_inner(&results, &Theme::default_theme(), false, 80);
         let body = out.split_once("\n\n").unwrap().1;
@@ -365,22 +413,16 @@ mod tests {
     #[test]
     fn summary_counts_only_repos_with_items() {
         let results = vec![
-            RepoResult {
-                repo: "a/empty".into(),
-                status: RepoStatus::Items(vec![]),
-            },
-            RepoResult {
-                repo: "a/withitems".into(),
-                status: RepoStatus::Items(vec![make_item(ItemKind::Issue, 1, "x", 0)]),
-            },
-            RepoResult {
-                repo: "a/missing".into(),
-                status: RepoStatus::NotFound,
-            },
-            RepoResult {
-                repo: "a/flaky".into(),
-                status: RepoStatus::Error(RepoError::Api("rate limited".into())),
-            },
+            RepoResult::new("a/empty".into(), RepoStatus::Items(vec![])),
+            RepoResult::new(
+                "a/withitems".into(),
+                RepoStatus::Items(vec![make_item(ItemKind::Issue, 1, "x", 0)]),
+            ),
+            RepoResult::new("a/missing".into(), RepoStatus::NotFound),
+            RepoResult::new(
+                "a/flaky".into(),
+                RepoStatus::Error(RepoError::Api("rate limited".into())),
+            ),
         ];
         let out = render_inner(&results, &Theme::default_theme(), false, 80);
         assert!(out.contains("4 projects attempted, 1 with pending tasks, 1 failed"));
@@ -393,14 +435,8 @@ mod tests {
     #[test]
     fn summary_counts_failures_when_no_pending_tasks() {
         let results = vec![
-            RepoResult {
-                repo: "a/empty".into(),
-                status: RepoStatus::Items(vec![]),
-            },
-            RepoResult {
-                repo: "a/timeout".into(),
-                status: RepoStatus::Error(RepoError::Timeout),
-            },
+            RepoResult::new("a/empty".into(), RepoStatus::Items(vec![])),
+            RepoResult::new("a/timeout".into(), RepoStatus::Error(RepoError::Timeout)),
         ];
         let out = render_inner(&results, &Theme::default_theme(), false, 80);
         assert!(out.contains("2 projects attempted, 0 with pending tasks, 1 failed"));
@@ -410,14 +446,8 @@ mod tests {
     #[test]
     fn all_empty_shows_only_summary() {
         let results = vec![
-            RepoResult {
-                repo: "a/b".into(),
-                status: RepoStatus::Items(vec![]),
-            },
-            RepoResult {
-                repo: "c/d".into(),
-                status: RepoStatus::Items(vec![]),
-            },
+            RepoResult::new("a/b".into(), RepoStatus::Items(vec![])),
+            RepoResult::new("c/d".into(), RepoStatus::Items(vec![])),
         ];
         let out = render_inner(&results, &Theme::default_theme(), false, 80);
         assert_eq!(out, "2 projects checked, 0 with pending tasks\n");
@@ -438,31 +468,121 @@ mod tests {
 
     #[test]
     fn nerv_theme_with_color_produces_ansi_escapes() {
-        let results = vec![RepoResult {
-            repo: "owner/repo".into(),
-            status: RepoStatus::Items(vec![make_item(ItemKind::Issue, 1, "x", 0)]),
-        }];
+        let results = vec![RepoResult::new(
+            "owner/repo".into(),
+            RepoStatus::Items(vec![make_item(ItemKind::Issue, 1, "x", 0)]),
+        )];
         let out = render_inner(&results, &Theme::nerv(), true, 80);
         assert!(out.contains("\x1b["));
     }
 
     #[test]
     fn nerv_theme_without_color_has_no_ansi_escapes() {
-        let results = vec![RepoResult {
-            repo: "owner/repo".into(),
-            status: RepoStatus::Items(vec![make_item(ItemKind::Issue, 1, "x", 0)]),
-        }];
+        let results = vec![RepoResult::new(
+            "owner/repo".into(),
+            RepoStatus::Items(vec![make_item(ItemKind::Issue, 1, "x", 0)]),
+        )];
         let out = render_inner(&results, &Theme::nerv(), false, 80);
         assert!(!out.contains("\x1b["));
     }
 
     #[test]
     fn evangelion_theme_with_color_produces_ansi_escapes() {
-        let results = vec![RepoResult {
-            repo: "owner/repo".into(),
-            status: RepoStatus::Items(vec![make_item(ItemKind::Issue, 1, "x", 0)]),
-        }];
+        let results = vec![RepoResult::new(
+            "owner/repo".into(),
+            RepoStatus::Items(vec![make_item(ItemKind::Issue, 1, "x", 0)]),
+        )];
         let out = render_inner(&results, &Theme::evangelion(), true, 80);
         assert!(out.contains("\x1b["));
+    }
+
+    #[test]
+    fn fork_header_shows_upstream_name_and_via_fork_suffix() {
+        let results = vec![
+            RepoResult::new(
+                "akitaonrails/omarchy".into(),
+                RepoStatus::Items(vec![make_fork_item(ItemKind::Issue, 1, "x", 0, None)]),
+            )
+            .with_upstream("omacom/omarchy".into()),
+        ];
+        let out = render_inner(&results, &Theme::default_theme(), false, 80);
+        let header_line = out.lines().find(|l| l.contains("━━")).unwrap();
+        assert_eq!(
+            header_line,
+            "━━ omacom/omarchy  (your items · via fork akitaonrails/omarchy)"
+        );
+    }
+
+    #[test]
+    fn fork_meta_line_shows_comments_and_omits_author() {
+        let results = vec![
+            RepoResult::new(
+                "akitaonrails/omarchy".into(),
+                RepoStatus::Items(vec![make_fork_item(
+                    ItemKind::Issue,
+                    1,
+                    "an issue",
+                    4,
+                    None,
+                )]),
+            )
+            .with_upstream("omacom/omarchy".into()),
+        ];
+        let out = render_inner(&results, &Theme::default_theme(), false, 80);
+        assert!(out.contains("opened 3d ago · updated 1d ago · 4 comments"));
+        assert!(!out.contains("by testuser"));
+    }
+
+    #[test]
+    fn fork_meta_line_appends_review_decision_when_present() {
+        let results = vec![
+            RepoResult::new(
+                "akitaonrails/omarchy".into(),
+                RepoStatus::Items(vec![make_fork_item(
+                    ItemKind::PullRequest,
+                    2,
+                    "a pr",
+                    1,
+                    Some("changes requested"),
+                )]),
+            )
+            .with_upstream("omacom/omarchy".into()),
+        ];
+        let out = render_inner(&results, &Theme::default_theme(), false, 80);
+        assert!(out.contains("1 comments · changes requested"));
+    }
+
+    #[test]
+    fn fork_meta_line_without_review_decision_has_no_trailing_dot() {
+        let results = vec![
+            RepoResult::new(
+                "akitaonrails/omarchy".into(),
+                RepoStatus::Items(vec![make_fork_item(
+                    ItemKind::PullRequest,
+                    2,
+                    "a pr",
+                    1,
+                    None,
+                )]),
+            )
+            .with_upstream("omacom/omarchy".into()),
+        ];
+        let out = render_inner(&results, &Theme::default_theme(), false, 80);
+        assert!(out.contains("1 comments\n"));
+    }
+
+    #[test]
+    fn non_fork_output_is_unaffected_by_upstream_field() {
+        let results = vec![RepoResult::new(
+            "ratatui-org/ratatui".into(),
+            RepoStatus::Items(vec![
+                make_item(ItemKind::PullRequest, 1842, "Fix overflow in Table", 2),
+                make_item(ItemKind::Issue, 1840, "Crash on empty Paragraph", 0),
+            ]),
+        )];
+        let out = render_inner(&results, &Theme::default_theme(), false, 80);
+        assert!(out.contains("opened 2d ago by testuser"));
+        assert!(!out.contains("comments"));
+        assert!(!out.contains("via fork"));
     }
 }

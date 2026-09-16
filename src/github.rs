@@ -22,6 +22,8 @@ pub struct RepoItem {
     pub updated_at: DateTime<Utc>,
     pub author: String,
     pub pr_draft: Option<bool>,
+    pub comments: Option<u64>,
+    pub review_decision: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,10 +34,35 @@ pub enum ItemKind {
 
 pub type SubscribedItems = HashMap<String, HashSet<u64>>;
 
+/// Tracked fork name -> upstream name (e.g. `"akitaonrails/omarchy"` ->
+/// `"omacom/omarchy"`), auto-managed cache persisted in the config. An empty
+/// string value means "checked, confirmed not a fork" (as opposed to a
+/// missing entry, which means "unknown, needs checking").
+pub type ForkCache = HashMap<String, String>;
+
 #[derive(Debug, Clone)]
 pub struct RepoResult {
     pub repo: String,
     pub status: RepoStatus,
+    /// `Some(parent)` when `repo` is a fork and `status` holds the items the
+    /// user authored on the upstream `parent` repo instead of the fork's own
+    /// (usually empty) items.
+    pub upstream: Option<String>,
+}
+
+impl RepoResult {
+    pub fn new(repo: String, status: RepoStatus) -> Self {
+        RepoResult {
+            repo,
+            status,
+            upstream: None,
+        }
+    }
+
+    pub fn with_upstream(mut self, upstream: String) -> Self {
+        self.upstream = Some(upstream);
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -314,32 +341,153 @@ fn repo_name_from_api_url(url: &str) -> Option<String> {
     Some(format!("{owner}/{name}").to_ascii_lowercase())
 }
 
+/// Fetches one repo's items over REST, consulting (and, when the repo is
+/// unknown to it, extending) the fork cache. Returns the result plus, when a
+/// repo's fork status was freshly determined this call, `(repo, value)` to
+/// merge into the persisted cache (`value` is the upstream name, or `""` for
+/// a confirmed non-fork).
 pub async fn fetch_repo_items(
     crab: &Octocrab,
     repo: &str,
     subscribed_numbers: Option<&HashSet<u64>>,
-) -> RepoResult {
+    forks: &ForkCache,
+) -> (RepoResult, Option<(String, String)>) {
     let Some((owner, name)) = split_repo(repo) else {
-        return RepoResult {
-            repo: repo.to_owned(),
-            status: RepoStatus::NotFound,
-        };
+        return (RepoResult::new(repo.to_owned(), RepoStatus::NotFound), None);
     };
 
-    match fetch_items_inner(crab, owner, name, subscribed_numbers).await {
-        Ok(items) => RepoResult {
-            repo: repo.to_owned(),
-            status: RepoStatus::Items(items),
-        },
-        Err(GithubError::NotFound(_)) => RepoResult {
-            repo: repo.to_owned(),
-            status: RepoStatus::NotFound,
-        },
-        Err(GithubError::Api(e)) => RepoResult {
-            repo: repo.to_owned(),
-            status: RepoStatus::Error(RepoError::Api(describe_api_error(&e))),
-        },
+    match forks.get(repo) {
+        Some(upstream) if !upstream.is_empty() => {
+            let result = fetch_repo_items_upstream(crab, repo, owner, upstream).await;
+            (result, None)
+        }
+        Some(_) => {
+            let result = fetch_repo_items_normal(crab, repo, owner, name, subscribed_numbers).await;
+            (result, None)
+        }
+        None => fetch_repo_items_detecting_fork(crab, repo, owner, name, subscribed_numbers).await,
     }
+}
+
+async fn fetch_repo_items_normal(
+    crab: &Octocrab,
+    repo: &str,
+    owner: &str,
+    name: &str,
+    subscribed_numbers: Option<&HashSet<u64>>,
+) -> RepoResult {
+    match fetch_items_inner(crab, owner, name, subscribed_numbers).await {
+        Ok(items) => RepoResult::new(repo.to_owned(), RepoStatus::Items(items)),
+        Err(GithubError::NotFound(_)) => RepoResult::new(repo.to_owned(), RepoStatus::NotFound),
+        Err(GithubError::Api(e)) => RepoResult::new(
+            repo.to_owned(),
+            RepoStatus::Error(RepoError::Api(describe_api_error(&e))),
+        ),
+    }
+}
+
+async fn fetch_repo_items_upstream(
+    crab: &Octocrab,
+    repo: &str,
+    fork_owner: &str,
+    upstream: &str,
+) -> RepoResult {
+    match fetch_upstream_items_rest(crab, fork_owner, upstream).await {
+        Ok(items) => RepoResult::new(repo.to_owned(), RepoStatus::Items(items))
+            .with_upstream(upstream.to_owned()),
+        Err(GithubError::NotFound(_)) => RepoResult::new(repo.to_owned(), RepoStatus::NotFound)
+            .with_upstream(upstream.to_owned()),
+        Err(GithubError::Api(e)) => RepoResult::new(
+            repo.to_owned(),
+            RepoStatus::Error(RepoError::Api(describe_api_error(&e))),
+        )
+        .with_upstream(upstream.to_owned()),
+    }
+}
+
+/// A repo not yet in the fork cache: one-time `GET /repos/{owner}/{name}` to
+/// learn whether it's a fork, then fetch the right set of items. The
+/// detection outcome is returned so the caller can persist it and skip this
+/// GET on future runs.
+async fn fetch_repo_items_detecting_fork(
+    crab: &Octocrab,
+    repo: &str,
+    owner: &str,
+    name: &str,
+    subscribed_numbers: Option<&HashSet<u64>>,
+) -> (RepoResult, Option<(String, String)>) {
+    let repo_data = match crab.repos(owner, name).get().await {
+        Ok(repo_data) => repo_data,
+        Err(_) => {
+            // Couldn't confirm fork status — fetch normally and leave the
+            // cache untouched so we retry the check next run.
+            let result = fetch_repo_items_normal(crab, repo, owner, name, subscribed_numbers).await;
+            return (result, None);
+        }
+    };
+
+    let upstream = if repo_data.fork.unwrap_or(false) {
+        repo_data.parent.as_ref().and_then(|p| p.full_name.clone())
+    } else {
+        None
+    };
+
+    match upstream {
+        Some(upstream) => {
+            let result = fetch_repo_items_upstream(crab, repo, owner, &upstream).await;
+            (result, Some((repo.to_owned(), upstream)))
+        }
+        None => {
+            let result = fetch_repo_items_normal(crab, repo, owner, name, subscribed_numbers).await;
+            (result, Some((repo.to_owned(), String::new())))
+        }
+    }
+}
+
+async fn fetch_upstream_items_rest(
+    crab: &Octocrab,
+    fork_owner: &str,
+    upstream: &str,
+) -> std::result::Result<Vec<RepoItem>, GithubError> {
+    let Some((up_owner, up_name)) = split_repo(upstream) else {
+        return Err(GithubError::NotFound(upstream.to_owned()));
+    };
+    let label = format!("{up_owner}/{up_name}");
+
+    let first_page = crab
+        .issues(up_owner, up_name)
+        .list()
+        .creator(fork_owner)
+        .state(octocrab::params::State::Open)
+        .per_page(100)
+        .send()
+        .await;
+    let first_page = map_github_err(first_page, &label)?;
+    let all_issues = crab.all_pages(first_page).await.map_err(GithubError::Api)?;
+
+    let mut items: Vec<RepoItem> = Vec::with_capacity(all_issues.len());
+    for issue in all_issues {
+        // This endpoint returns issues and PRs together; PRs carry a
+        // `pull_request` link.
+        let kind = if issue.pull_request.is_some() {
+            ItemKind::PullRequest
+        } else {
+            ItemKind::Issue
+        };
+        items.push(RepoItem {
+            kind,
+            number: issue.number,
+            title: issue.title,
+            created_at: issue.created_at,
+            updated_at: issue.updated_at,
+            author: issue.user.login,
+            pr_draft: None,
+            comments: Some(u64::from(issue.comments)),
+            review_decision: None,
+        });
+    }
+    items.sort_by(item_cmp);
+    Ok(items)
 }
 
 /// Fetches every repo over REST, capped at `MAX_CONCURRENT_FETCHES`
@@ -352,9 +500,11 @@ pub(crate) async fn fetch_repos_rest(
     crab: &Octocrab,
     repos: &[String],
     subscribed: Option<&SubscribedItems>,
-) -> Vec<RepoResult> {
+    forks: &ForkCache,
+) -> (Vec<RepoResult>, ForkCache) {
     let empty_subscriptions = HashSet::new();
     let mut results = vec![None; repos.len()];
+    let mut detected: ForkCache = ForkCache::new();
     let mut in_flight = FuturesUnordered::new();
     let mut next = 0;
 
@@ -368,6 +518,7 @@ pub(crate) async fn fetch_repos_rest(
             next,
             repo,
             subscribed_numbers,
+            forks,
         ));
         next += 1;
     }
@@ -378,8 +529,11 @@ pub(crate) async fn fetch_repos_rest(
     while !in_flight.is_empty() {
         tokio::select! {
             _ = &mut deadline => break,
-            Some((index, result)) = in_flight.next() => {
+            Some((index, result, detected_fork)) = in_flight.next() => {
                 results[index] = Some(result);
+                if let Some((key, value)) = detected_fork {
+                    detected.insert(key, value);
+                }
 
                 if next < repos.len() {
                     let repo = repos[next].clone();
@@ -391,6 +545,7 @@ pub(crate) async fn fetch_repos_rest(
                         next,
                         repo,
                         subscribed_numbers,
+                        forks,
                     ));
                     next += 1;
                 }
@@ -398,11 +553,12 @@ pub(crate) async fn fetch_repos_rest(
         }
     }
 
-    results
+    let results = results
         .into_iter()
         .enumerate()
         .map(|(index, result)| result.unwrap_or_else(|| timeout_result(repos[index].clone())))
-        .collect()
+        .collect();
+    (results, detected)
 }
 
 async fn fetch_repo_with_timeout(
@@ -410,24 +566,22 @@ async fn fetch_repo_with_timeout(
     index: usize,
     repo: String,
     subscribed_numbers: Option<&HashSet<u64>>,
-) -> (usize, RepoResult) {
-    let result = match timeout(
+    forks: &ForkCache,
+) -> (usize, RepoResult, Option<(String, String)>) {
+    let (result, detected) = match timeout(
         FETCH_TIMEOUT,
-        fetch_repo_items(crab, &repo, subscribed_numbers),
+        fetch_repo_items(crab, &repo, subscribed_numbers, forks),
     )
     .await
     {
-        Ok(result) => result,
-        Err(_) => timeout_result(repo),
+        Ok(pair) => pair,
+        Err(_) => (timeout_result(repo), None),
     };
-    (index, result)
+    (index, result, detected)
 }
 
 fn timeout_result(repo: String) -> RepoResult {
-    RepoResult {
-        repo,
-        status: RepoStatus::Error(RepoError::Timeout),
-    }
+    RepoResult::new(repo, RepoStatus::Error(RepoError::Timeout))
 }
 
 async fn fetch_items_inner(
@@ -481,6 +635,8 @@ async fn fetch_items_inner(
             updated_at,
             author,
             pr_draft: None,
+            comments: None,
+            review_decision: None,
         });
     }
 
@@ -503,6 +659,8 @@ async fn fetch_items_inner(
             updated_at,
             author,
             pr_draft,
+            comments: None,
+            review_decision: None,
         });
     }
 
@@ -536,6 +694,8 @@ mod tests {
             updated_at: Utc::now(),
             author: "user".into(),
             pr_draft: None,
+            comments: None,
+            review_decision: None,
         }
     }
 

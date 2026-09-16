@@ -19,7 +19,7 @@ pub async fn run(
     subscribed_only: bool,
     sort_mode: SortMode,
 ) -> Result<()> {
-    let cfg = config::load()?;
+    let mut cfg = config::load()?;
 
     if cfg.repos.is_empty() {
         println!("No repos tracked. Run `ghpending add` to get started.");
@@ -59,13 +59,24 @@ pub async fn run(
     } else {
         None
     };
-    let mut results = if use_graphql(github_client::github_token().is_some()) {
-        graphql::fetch_repos_batched(crab, &cfg.repos, subscribed.as_ref()).await
+    let (mut results, forks_to_persist) = if use_graphql(github_client::github_token().is_some()) {
+        let (results, fork_map) =
+            graphql::fetch_repos_batched(crab, &cfg.repos, subscribed.as_ref(), &cfg.forks).await;
+        (results, merge_fork_cache(&cfg.forks, fork_map))
     } else {
-        github::fetch_repos_rest(crab, &cfg.repos, subscribed.as_ref()).await
+        let (results, detected) =
+            github::fetch_repos_rest(crab, &cfg.repos, subscribed.as_ref(), &cfg.forks).await;
+        (results, merge_fork_cache(&cfg.forks, detected))
     };
 
     spinner.finish_and_clear();
+
+    if let Some(forks) = forks_to_persist {
+        cfg.forks = forks;
+        // Best-effort: the fork cache is just an optimization, so a save
+        // failure (e.g. a read-only config dir) shouldn't block the digest.
+        let _ = config::save(&cfg);
+    }
 
     sort::sort_results(&mut results, sort_mode);
 
@@ -84,6 +95,26 @@ pub async fn run(
 /// access) instead of failing every repo fetch outright.
 fn use_graphql(has_token: bool) -> bool {
     has_token
+}
+
+/// Merges freshly observed fork-cache entries over the existing cache and
+/// returns the result only when it actually changes something. Merging (not
+/// replacing) keeps entries for repos that errored this run, and the fresh
+/// values already have manual overrides applied by the fetch layer.
+fn merge_fork_cache(
+    existing: &crate::github::ForkCache,
+    fresh: crate::github::ForkCache,
+) -> Option<crate::github::ForkCache> {
+    if fresh.is_empty() {
+        return None;
+    }
+    let mut merged = existing.clone();
+    merged.extend(fresh);
+    if merged == *existing {
+        None
+    } else {
+        Some(merged)
+    }
 }
 
 pub(crate) fn all_repo_fetches_failed(results: &[crate::github::RepoResult]) -> bool {
@@ -107,26 +138,42 @@ mod tests {
     #[test]
     fn all_repo_fetches_failed_requires_every_result_to_be_error() {
         assert!(all_repo_fetches_failed(&[
-            RepoResult {
-                repo: "a/b".into(),
-                status: RepoStatus::Error(RepoError::Timeout),
-            },
-            RepoResult {
-                repo: "c/d".into(),
-                status: RepoStatus::Error(RepoError::Api("boom".into())),
-            },
+            RepoResult::new("a/b".into(), RepoStatus::Error(RepoError::Timeout)),
+            RepoResult::new(
+                "c/d".into(),
+                RepoStatus::Error(RepoError::Api("boom".into()))
+            ),
         ]));
 
-        assert!(!all_repo_fetches_failed(&[RepoResult {
-            repo: "a/b".into(),
-            status: RepoStatus::NotFound,
-        }]));
+        assert!(!all_repo_fetches_failed(&[RepoResult::new(
+            "a/b".into(),
+            RepoStatus::NotFound
+        )]));
 
-        assert!(!all_repo_fetches_failed(&[RepoResult {
-            repo: "a/b".into(),
-            status: RepoStatus::Items(vec![]),
-        }]));
+        assert!(!all_repo_fetches_failed(&[RepoResult::new(
+            "a/b".into(),
+            RepoStatus::Items(vec![])
+        )]));
 
         assert!(!all_repo_fetches_failed(&[]));
+    }
+
+    #[test]
+    fn merge_fork_cache_preserves_existing_and_detects_no_change() {
+        let mut existing = crate::github::ForkCache::new();
+        existing.insert("a/errored-this-run".into(), "up/a".into());
+        existing.insert("b/opted-out".into(), String::new());
+
+        let mut fresh = crate::github::ForkCache::new();
+        fresh.insert("b/opted-out".into(), String::new());
+        fresh.insert("c/new-fork".into(), "up/c".into());
+
+        let merged = merge_fork_cache(&existing, fresh.clone()).expect("changed");
+        assert_eq!(merged.get("a/errored-this-run").unwrap(), "up/a");
+        assert_eq!(merged.get("b/opted-out").unwrap(), "");
+        assert_eq!(merged.get("c/new-fork").unwrap(), "up/c");
+
+        assert!(merge_fork_cache(&merged, fresh).is_none());
+        assert!(merge_fork_cache(&existing, crate::github::ForkCache::new()).is_none());
     }
 }

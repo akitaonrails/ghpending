@@ -140,41 +140,34 @@ mod tests {
             updated_at: base_time() - chrono::Duration::days(updated_days_ago),
             author: "user".into(),
             pr_draft: None,
+            comments: None,
+            review_decision: None,
         }
     }
 
     fn items_repo(name: &str, updated_days_ago: &[i64]) -> RepoResult {
-        RepoResult {
-            repo: name.into(),
-            status: RepoStatus::Items(
+        RepoResult::new(
+            name.into(),
+            RepoStatus::Items(
                 updated_days_ago
                     .iter()
                     .enumerate()
                     .map(|(i, &days)| item(i as u64 + 1, days))
                     .collect(),
             ),
-        }
+        )
     }
 
     fn empty_repo(name: &str) -> RepoResult {
-        RepoResult {
-            repo: name.into(),
-            status: RepoStatus::Items(vec![]),
-        }
+        RepoResult::new(name.into(), RepoStatus::Items(vec![]))
     }
 
     fn error_repo(name: &str) -> RepoResult {
-        RepoResult {
-            repo: name.into(),
-            status: RepoStatus::Error(RepoError::Timeout),
-        }
+        RepoResult::new(name.into(), RepoStatus::Error(RepoError::Timeout))
     }
 
     fn not_found_repo(name: &str) -> RepoResult {
-        RepoResult {
-            repo: name.into(),
-            status: RepoStatus::NotFound,
-        }
+        RepoResult::new(name.into(), RepoStatus::NotFound)
     }
 
     fn names(results: &[RepoResult]) -> Vec<&str> {

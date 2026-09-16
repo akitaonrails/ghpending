@@ -78,6 +78,10 @@ ghpending rm     # remove repos from the list
 - `ghpending list` — prints the repos currently in your watch list.
 - `ghpending rm` — opens an interactive menu to select repos to remove from tracking.
 
+## Forks
+
+Forks are detected automatically — no configuration needed. When a tracked repo turns out to be a fork (e.g. `akitaonrails/omarchy`, forked from `omacom/omarchy`), you almost never care about issues or PRs on the fork itself, so the digest switches to showing the issues and pull requests **you opened on the upstream project** instead: still open, with comment counts and review decisions so you can see if there's feedback waiting. Detection results are cached in the config's `[forks]` table (tracked fork name → upstream name, or an empty string for a confirmed non-fork) so repeat runs don't pay for the extra lookup. Manual edits to that table always win: delete an entry to force re-detection, set it to `""` to opt a fork out of the upstream view (useful for forks you maintain as independent projects), or point it at a different upstream entirely.
+
 ## Authentication
 
 `GITHUB_TOKEN` is optional. Without one, public repository access is subject to GitHub's 60 requests/hour limit. Set a token for a 5,000 requests/hour limit, access to private repositories, and faster digests (all repos are fetched in one batched GraphQL request instead of two REST calls each):
