@@ -485,14 +485,20 @@ async fn fetch_items_inner(
     }
 
     for pr in all_prs {
-        let author = pr.user.login.clone();
-        let created_at = pr.created_at;
-        let updated_at = pr.updated_at;
+        // octocrab 0.54 models most PR-list fields as Option; a PR returned
+        // by the list endpoint always carries them in practice, so fall back
+        // rather than fail the whole repo.
+        let author = pr
+            .user
+            .as_ref()
+            .map_or_else(|| "ghost".to_owned(), |user| user.login.clone());
+        let created_at = pr.created_at.or(pr.updated_at).unwrap_or_else(Utc::now);
+        let updated_at = pr.updated_at.unwrap_or(created_at);
         let pr_draft = pr.draft;
         items.push(RepoItem {
             kind: ItemKind::PullRequest,
             number: pr.number,
-            title: pr.title,
+            title: pr.title.unwrap_or_default(),
             created_at,
             updated_at,
             author,
