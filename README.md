@@ -102,6 +102,8 @@ To include **private** repos, the token needs the `repo` scope (classic) or read
 
 If a SOCKS proxy is already listening at `127.0.0.1:9050`, `ghpending` uses it for GitHub API calls and falls back to direct API access when it is not available. You can also force a SOCKS proxy with `GHPENDING_GITHUB_PROXY=socks5h://host:port`; existing `HTTPS_PROXY` / `ALL_PROXY` values are honored when they use `socks5` or `socks5h`.
 
+See [Config](#config) for `GHPENDING_REPOS`, which overrides the tracked repo list for a single run.
+
 ## Config
 
 The config file lives at:
@@ -118,6 +120,14 @@ sort = "name"
 ```
 
 Run `ghpending add --user <name>` to change the `user` field, or edit the file directly to reorder repos. Set `sort` to `activity`, `name`, `count` or `stale` to change the default repo order without passing `--sort` each time.
+
+Set `$GHPENDING_REPOS` to a comma-separated `owner/repo` list to override the tracked repos for a single run, without touching `config.toml`:
+
+```bash
+GHPENDING_REPOS=owner/repo1,owner/repo2 ghpending
+```
+
+Entries are trimmed and blanks are dropped. This only affects the digest — `add`, `rm` and `list` still read and write the saved `repos` list untouched.
 
 ## Themes
 
