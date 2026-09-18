@@ -21,7 +21,14 @@ pub async fn run(
 ) -> Result<()> {
     let mut cfg = config::load()?;
 
-    if cfg.repos.is_empty() {
+    // $GHPENDING_REPOS overrides which repos this run fetches, without ever
+    // touching `cfg.repos` itself: `cfg` is passed to `config::save()` below
+    // to persist the fork-detection cache, and if the override leaked into
+    // `cfg.repos` that save would silently overwrite the tracked list on
+    // disk with the one-off override.
+    let repos = config::repos_override_from_env().unwrap_or_else(|| cfg.repos.clone());
+
+    if repos.is_empty() {
         println!("No repos tracked. Run `ghpending add` to get started.");
         return Ok(());
     }
@@ -61,11 +68,11 @@ pub async fn run(
     };
     let (mut results, forks_to_persist) = if use_graphql(github_client::github_token().is_some()) {
         let (results, fork_map) =
-            graphql::fetch_repos_batched(crab, &cfg.repos, subscribed.as_ref(), &cfg.forks).await;
+            graphql::fetch_repos_batched(crab, &repos, subscribed.as_ref(), &cfg.forks).await;
         (results, merge_fork_cache(&cfg.forks, fork_map))
     } else {
         let (results, detected) =
-            github::fetch_repos_rest(crab, &cfg.repos, subscribed.as_ref(), &cfg.forks).await;
+            github::fetch_repos_rest(crab, &repos, subscribed.as_ref(), &cfg.forks).await;
         (results, merge_fork_cache(&cfg.forks, detected))
     };
 

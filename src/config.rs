@@ -61,9 +61,68 @@ pub fn save(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Comma-separated `owner/repo` list from `$GHPENDING_REPOS`, overriding
+/// the tracked list for this run only. Never written back to config.toml —
+/// `add`/`rm`/`list` are unaffected, it only reshapes what the digest
+/// fetches. Entries are trimmed; blanks (from stray commas or surrounding
+/// whitespace) are dropped. An unset or entirely-blank var yields `None`,
+/// leaving `cfg.repos` untouched.
+pub fn repos_override_from_env() -> Option<Vec<String>> {
+    let raw = std::env::var("GHPENDING_REPOS").ok()?;
+    let repos: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if repos.is_empty() { None } else { Some(repos) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // GHPENDING_REPOS tests mutate a process-global env var, so they must
+    // never run concurrently with each other (cargo test runs #[test]s in
+    // parallel threads by default) or they'll read back one another's value.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn repos_override_from_env_absent() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("GHPENDING_REPOS") };
+        assert_eq!(repos_override_from_env(), None);
+    }
+
+    #[test]
+    fn repos_override_from_env_parses_csv() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("GHPENDING_REPOS", "a/b,c/d") };
+        assert_eq!(
+            repos_override_from_env(),
+            Some(vec!["a/b".to_owned(), "c/d".to_owned()])
+        );
+        unsafe { std::env::remove_var("GHPENDING_REPOS") };
+    }
+
+    #[test]
+    fn repos_override_from_env_trims_and_drops_blanks() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("GHPENDING_REPOS", " a/b , , c/d ,") };
+        assert_eq!(
+            repos_override_from_env(),
+            Some(vec!["a/b".to_owned(), "c/d".to_owned()])
+        );
+        unsafe { std::env::remove_var("GHPENDING_REPOS") };
+    }
+
+    #[test]
+    fn repos_override_from_env_all_blank_is_none() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("GHPENDING_REPOS", " , , ") };
+        assert_eq!(repos_override_from_env(), None);
+        unsafe { std::env::remove_var("GHPENDING_REPOS") };
+    }
 
     #[test]
     fn round_trip_with_user() {
