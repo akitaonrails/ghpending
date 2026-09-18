@@ -65,6 +65,7 @@ struct ItemNode {
     author: Option<Author>,
     #[serde(default, rename = "isDraft")]
     is_draft: Option<bool>,
+    comments: Option<CommentsCount>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -266,7 +267,7 @@ fn build_query(chunk: &[ValidRepo<'_>]) -> String {
     let mut query = String::from("query {");
     for (i, repo) in chunk.iter().enumerate() {
         query.push_str(&format!(
-            "\n  r{i}: repository(owner: {:?}, name: {:?}) {{\n    isFork\n    parent {{ nameWithOwner }}\n    issues(states: OPEN, first: {MAX_ITEMS_PER_CONNECTION}) {{ totalCount nodes {{ number title createdAt updatedAt author {{ login }} }} }}\n    pullRequests(states: OPEN, first: {MAX_ITEMS_PER_CONNECTION}) {{ totalCount nodes {{ number title createdAt updatedAt author {{ login }} isDraft }} }}\n  }}",
+            "\n  r{i}: repository(owner: {:?}, name: {:?}) {{\n    isFork\n    parent {{ nameWithOwner }}\n    issues(states: OPEN, first: {MAX_ITEMS_PER_CONNECTION}) {{ totalCount nodes {{ number title createdAt updatedAt author {{ login }} comments {{ totalCount }} }} }}\n    pullRequests(states: OPEN, first: {MAX_ITEMS_PER_CONNECTION}) {{ totalCount nodes {{ number title createdAt updatedAt author {{ login }} isDraft comments {{ totalCount }} }} }}\n  }}",
             repo.owner, repo.name,
         ));
     }
@@ -390,8 +391,9 @@ fn items_from_node(node: &RepoNode) -> Vec<RepoItem> {
             updated_at: issue.updated_at,
             author: author_login(&issue.author),
             pr_draft: None,
-            comments: None,
+            comments: Some(issue.comments.as_ref().map_or(0, |c| c.total_count)),
             review_decision: None,
+            mine: false,
         });
     }
     for pr in &node.pull_requests.nodes {
@@ -403,8 +405,9 @@ fn items_from_node(node: &RepoNode) -> Vec<RepoItem> {
             updated_at: pr.updated_at,
             author: author_login(&pr.author),
             pr_draft: pr.is_draft,
-            comments: None,
+            comments: Some(pr.comments.as_ref().map_or(0, |c| c.total_count)),
             review_decision: None,
+            mine: false,
         });
     }
 
@@ -643,6 +646,7 @@ fn items_from_search_nodes(nodes: &[SearchNode]) -> Vec<RepoItem> {
             pr_draft,
             comments,
             review_decision,
+            mine: false,
         });
     }
 

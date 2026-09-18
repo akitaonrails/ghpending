@@ -5,7 +5,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use octocrab::Octocrab;
 use tokio::time::timeout;
 
-use crate::github::RepoStatus;
+use crate::github::{RepoResult, RepoStatus};
 use crate::sort::SortMode;
 use crate::theme::Theme;
 use crate::{config, display, github, github_client, graphql, sort};
@@ -78,6 +78,9 @@ pub async fn run(
         let _ = config::save(&cfg);
     }
 
+    let viewer = resolve_viewer(crab, &cfg).await;
+    mark_and_order_items(&mut results, viewer.as_deref());
+
     sort::sort_results(&mut results, sort_mode);
 
     let digest = display::render_digest(&results, theme, limit);
@@ -95,6 +98,38 @@ pub async fn run(
 /// access) instead of failing every repo fetch outright.
 fn use_graphql(has_token: bool) -> bool {
     has_token
+}
+
+/// Resolves who "the user" is for this digest run: the authenticated login
+/// when a token is present and the lookup succeeds, otherwise the configured
+/// `user`. A lookup error (or a 401 mapped to `None` by
+/// `authenticated_login`) never fails the digest — it just falls back.
+async fn resolve_viewer(crab: &Octocrab, cfg: &config::Config) -> Option<String> {
+    if github_client::github_token().is_some()
+        && let Ok(Some(login)) = github::authenticated_login(crab).await
+    {
+        return Some(login);
+    }
+    cfg.user.clone()
+}
+
+/// For every non-fork repo with items: tags each item `mine` when its author
+/// matches `viewer` (case-insensitive), then stably reorders so others'
+/// items list above the viewer's own, preserving the existing PR-first/
+/// number-descending order within each group. Fork results (upstream items)
+/// are left untouched — that view's ordering is unrelated to "mine".
+pub(crate) fn mark_and_order_items(results: &mut [RepoResult], viewer: Option<&str>) {
+    for result in results.iter_mut() {
+        if result.upstream.is_some() {
+            continue;
+        }
+        if let RepoStatus::Items(items) = &mut result.status {
+            for item in items.iter_mut() {
+                item.mine = viewer.is_some_and(|v| v.eq_ignore_ascii_case(&item.author));
+            }
+            items.sort_by_key(|item| item.mine);
+        }
+    }
 }
 
 /// Merges freshly observed fork-cache entries over the existing cache and
@@ -127,7 +162,79 @@ pub(crate) fn all_repo_fetches_failed(results: &[crate::github::RepoResult]) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::github::{RepoError, RepoResult};
+    use crate::github::{ItemKind, RepoError, RepoItem, RepoResult};
+
+    fn item(number: u64, author: &str) -> RepoItem {
+        RepoItem {
+            kind: ItemKind::Issue,
+            number,
+            title: format!("item {number}"),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            author: author.into(),
+            pr_draft: None,
+            comments: None,
+            review_decision: None,
+            mine: false,
+        }
+    }
+
+    #[test]
+    fn mark_and_order_items_puts_others_above_mine_stably_and_skips_forks() {
+        let mut results = vec![
+            RepoResult::new(
+                "a/b".into(),
+                RepoStatus::Items(vec![
+                    item(1, "viewer"),
+                    item(2, "alice"),
+                    item(3, "viewer"),
+                    item(4, "bob"),
+                ]),
+            ),
+            RepoResult::new(
+                "fork/repo".into(),
+                RepoStatus::Items(vec![item(5, "viewer")]),
+            )
+            .with_upstream("upstream/repo".into()),
+        ];
+
+        mark_and_order_items(&mut results, Some("viewer"));
+
+        let RepoStatus::Items(items) = &results[0].status else {
+            panic!("expected items")
+        };
+        let numbers: Vec<u64> = items.iter().map(|i| i.number).collect();
+        // Others (alice, bob) keep their relative order above the viewer's
+        // own (also kept in relative order) — a stable sort on `mine`.
+        assert_eq!(numbers, vec![2, 4, 1, 3]);
+        assert!(!items[0].mine);
+        assert!(!items[1].mine);
+        assert!(items[2].mine);
+        assert!(items[3].mine);
+
+        // Fork result untouched, even though its item's author matches the
+        // viewer: order and `mine` are left alone.
+        let RepoStatus::Items(fork_items) = &results[1].status else {
+            panic!("expected items")
+        };
+        assert_eq!(fork_items[0].number, 5);
+        assert!(!fork_items[0].mine);
+    }
+
+    #[test]
+    fn mark_and_order_items_with_no_viewer_marks_nothing_mine() {
+        let mut results = vec![RepoResult::new(
+            "a/b".into(),
+            RepoStatus::Items(vec![item(1, "alice"), item(2, "bob")]),
+        )];
+
+        mark_and_order_items(&mut results, None);
+
+        let RepoStatus::Items(items) = &results[0].status else {
+            panic!("expected items")
+        };
+        assert!(items.iter().all(|i| !i.mine));
+    }
 
     #[test]
     fn use_graphql_requires_a_token() {

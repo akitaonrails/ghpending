@@ -142,6 +142,7 @@ mod tests {
             pr_draft: None,
             comments: None,
             review_decision: None,
+            mine: false,
         }
     }
 

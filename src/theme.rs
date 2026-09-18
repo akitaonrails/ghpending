@@ -8,6 +8,12 @@ pub struct Theme {
     pub issue: Style,
     pub meta: Style,
     pub error: Style,
+    /// De-emphasis for items the viewer authored themselves ("mine = waiting
+    /// on others").
+    pub mine: Style,
+    /// Attention highlight for signals that mean "act on this" — nonzero
+    /// comment counts, a "changes requested" review decision.
+    pub feedback: Style,
 }
 
 impl Theme {
@@ -18,6 +24,8 @@ impl Theme {
             issue: Style::new().yellow(),
             meta: Style::new().dimmed(),
             error: Style::new().red().dimmed(),
+            mine: Style::new().dimmed(),
+            feedback: Style::new().green().bold(),
         }
     }
 
@@ -28,6 +36,8 @@ impl Theme {
             issue: Style::new().color(XtermColors::FlushOrange),
             meta: Style::new().color(XtermColors::WildBlueYonder),
             error: Style::new().color(XtermColors::Red),
+            mine: Style::new().dimmed().color(XtermColors::WildBlueYonder),
+            feedback: Style::new().bold().color(XtermColors::ChartreuseGreen),
         }
     }
 
@@ -38,6 +48,8 @@ impl Theme {
             issue: Style::new().color(XtermColors::YellowSea),
             meta: Style::new().dimmed().color(XtermColors::BondiBlue),
             error: Style::new().bold().color(XtermColors::Red),
+            mine: Style::new().dimmed().color(XtermColors::BondiBlue),
+            feedback: Style::new().bold().color(XtermColors::SpringGreen),
         }
     }
 

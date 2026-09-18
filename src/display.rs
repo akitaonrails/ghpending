@@ -97,13 +97,15 @@ fn render_inner_limited(
                 for item in items.iter().take(item_allocations[index]) {
                     let (kind_str, number_str, title_str) = match item.kind {
                         ItemKind::PullRequest => {
-                            let ks = paint("PR ", color, theme.pr);
+                            let style = if item.mine { theme.mine } else { theme.pr };
+                            let ks = paint("PR ", color, style);
                             let ns = format!("#{}", item.number);
                             let title = truncate_title(&item.title, title_max);
                             (ks, ns, title)
                         }
                         ItemKind::Issue => {
-                            let ks = paint("ISS", color, theme.issue);
+                            let style = if item.mine { theme.mine } else { theme.issue };
+                            let ks = paint("ISS", color, style);
                             let ns = format!("#{}", item.number);
                             let title = truncate_title(&item.title, title_max);
                             (ks, ns, title)
@@ -113,24 +115,44 @@ fn render_inner_limited(
                     body.push_str(&format!("  {kind_str}  {number_str}  {title_str}\n"));
 
                     let rel = relative_time(&item.created_at, &now);
-                    let mut meta = if is_fork_view {
+                    // The meta line is a concatenation of separately painted
+                    // fragments (rather than one string painted as a whole)
+                    // so the comments/review-decision fragments can carry
+                    // their own attention coloring.
+                    let mut fragments: Vec<String> = Vec::new();
+
+                    if is_fork_view {
                         let rel_updated = relative_time(&item.updated_at, &now);
-                        format!(
-                            "opened {rel} ago · updated {rel_updated} ago · {} comments",
-                            item.comments.unwrap_or(0)
-                        )
+                        fragments.push(paint(
+                            &format!("opened {rel} ago · updated {rel_updated} ago"),
+                            color,
+                            theme.meta,
+                        ));
+                        fragments.push(comment_fragment(item.comments.unwrap_or(0), color, theme));
                     } else {
-                        format!("opened {rel} ago by {}", item.author)
-                    };
+                        let who = if item.mine { "you" } else { &item.author };
+                        fragments.push(paint(
+                            &format!("opened {rel} ago by {who}"),
+                            color,
+                            theme.meta,
+                        ));
+                        if let Some(n) = item.comments {
+                            fragments.push(comment_fragment(n, color, theme));
+                        }
+                    }
+
                     if is_fork_view && let Some(decision) = &item.review_decision {
-                        meta.push_str(" · ");
-                        meta.push_str(decision);
+                        let style = if decision == "changes requested" {
+                            theme.feedback
+                        } else {
+                            theme.meta
+                        };
+                        fragments.push(paint(decision, color, style));
                     }
                     if let Some(state) = pr_state_label(item) {
-                        meta.push_str(" · ");
-                        meta.push_str(state);
+                        fragments.push(paint(state, color, theme.meta));
                     }
-                    let meta_colored = paint(&meta, color, theme.meta);
+                    let meta_colored = fragments.join(" · ");
                     body.push_str(&format!("        {meta_colored}\n"));
                 }
             }
@@ -188,6 +210,15 @@ fn allocate_items(results: &[RepoResult], limit: Option<usize>) -> Vec<usize> {
     allocations
 }
 
+/// Renders a `"N comment"`/`"N comments"` fragment (singular for 1), colored
+/// with `theme.feedback` when `n > 0` ("feedback exists") or `theme.meta`
+/// when `n == 0`.
+fn comment_fragment(n: u64, color: bool, theme: &Theme) -> String {
+    let word = if n == 1 { "comment" } else { "comments" };
+    let style = if n > 0 { theme.feedback } else { theme.meta };
+    paint(&format!("{n} {word}"), color, style)
+}
+
 fn pr_state_label(item: &crate::github::RepoItem) -> Option<&'static str> {
     match item.kind {
         ItemKind::PullRequest => match item.pr_draft {
@@ -217,6 +248,21 @@ mod tests {
             pr_draft: None,
             comments: None,
             review_decision: None,
+            mine: false,
+        }
+    }
+
+    fn make_item_mine(kind: ItemKind, number: u64, title: &str, mine: bool) -> RepoItem {
+        RepoItem {
+            mine,
+            ..make_item(kind, number, title, 0)
+        }
+    }
+
+    fn make_item_with_comments(kind: ItemKind, number: u64, comments: Option<u64>) -> RepoItem {
+        RepoItem {
+            comments,
+            ..make_item(kind, number, "item", 0)
         }
     }
 
@@ -231,6 +277,7 @@ mod tests {
             pr_draft: draft,
             comments: None,
             review_decision: None,
+            mine: false,
         }
     }
 
@@ -251,6 +298,7 @@ mod tests {
             pr_draft: None,
             comments: Some(comments),
             review_decision: review_decision.map(str::to_owned),
+            mine: false,
         }
     }
 
@@ -549,7 +597,7 @@ mod tests {
             .with_upstream("omacom/omarchy".into()),
         ];
         let out = render_inner(&results, &Theme::default_theme(), false, 80);
-        assert!(out.contains("1 comments · changes requested"));
+        assert!(out.contains("1 comment · changes requested"));
     }
 
     #[test]
@@ -568,7 +616,7 @@ mod tests {
             .with_upstream("omacom/omarchy".into()),
         ];
         let out = render_inner(&results, &Theme::default_theme(), false, 80);
-        assert!(out.contains("1 comments\n"));
+        assert!(out.contains("1 comment\n"));
     }
 
     #[test]
@@ -584,5 +632,89 @@ mod tests {
         assert!(out.contains("opened 2d ago by testuser"));
         assert!(!out.contains("comments"));
         assert!(!out.contains("via fork"));
+    }
+
+    #[test]
+    fn mine_item_renders_by_you_and_non_mine_renders_login() {
+        let results = vec![RepoResult::new(
+            "a/b".into(),
+            RepoStatus::Items(vec![
+                make_item_mine(ItemKind::Issue, 1, "mine", true),
+                make_item_mine(ItemKind::Issue, 2, "theirs", false),
+            ]),
+        )];
+        let out = render_inner(&results, &Theme::default_theme(), false, 80);
+        assert!(out.contains("opened just now ago by you"));
+        assert!(out.contains("opened just now ago by testuser"));
+        assert!(!out.contains("by you testuser"));
+    }
+
+    #[test]
+    fn comments_fragment_singular_plural_and_absent() {
+        let results = vec![RepoResult::new(
+            "a/b".into(),
+            RepoStatus::Items(vec![
+                make_item_with_comments(ItemKind::Issue, 1, Some(1)),
+                make_item_with_comments(ItemKind::Issue, 2, Some(3)),
+                make_item_with_comments(ItemKind::PullRequest, 3, None),
+            ]),
+        )];
+        let out = render_inner(&results, &Theme::default_theme(), false, 80);
+        assert!(out.contains("1 comment\n"));
+        assert!(out.contains("3 comments\n"));
+        // The None-comments item's meta line ends right after the author,
+        // with no comments fragment at all.
+        assert!(out.contains("opened just now ago by testuser\n"));
+    }
+
+    #[test]
+    fn comment_coloring_differs_between_zero_and_nonzero_with_color() {
+        let zero_out = render_inner(
+            &[RepoResult::new(
+                "a/b".into(),
+                RepoStatus::Items(vec![make_item_with_comments(ItemKind::Issue, 1, Some(0))]),
+            )],
+            &Theme::default_theme(),
+            true,
+            80,
+        );
+        let nonzero_out = render_inner(
+            &[RepoResult::new(
+                "a/b".into(),
+                RepoStatus::Items(vec![make_item_with_comments(ItemKind::Issue, 1, Some(3))]),
+            )],
+            &Theme::default_theme(),
+            true,
+            80,
+        );
+        let zero_fragment = zero_out.lines().find(|l| l.contains("0 comments")).unwrap();
+        let nonzero_fragment = nonzero_out
+            .lines()
+            .find(|l| l.contains("3 comments"))
+            .unwrap();
+        // Both contain ANSI escapes, but the styles applied to the comments
+        // fragment differ (dim meta vs. bold green feedback).
+        assert!(zero_fragment.contains("\x1b["));
+        assert!(nonzero_fragment.contains("\x1b["));
+        assert_ne!(zero_fragment, nonzero_fragment);
+    }
+
+    #[test]
+    fn limit_truncation_drops_mine_items_before_others() {
+        // Mirrors what `mark_and_order_items` produces: others above mine.
+        let results = vec![RepoResult::new(
+            "a/b".into(),
+            RepoStatus::Items(vec![
+                make_item_mine(ItemKind::Issue, 1, "theirs-1", false),
+                make_item_mine(ItemKind::Issue, 2, "theirs-2", false),
+                make_item_mine(ItemKind::Issue, 3, "mine-1", true),
+                make_item_mine(ItemKind::Issue, 4, "mine-2", true),
+            ]),
+        )];
+        let out = render_inner_limited(&results, &Theme::default_theme(), false, 80, Some(2));
+        assert!(out.contains("theirs-1"));
+        assert!(out.contains("theirs-2"));
+        assert!(!out.contains("mine-1"));
+        assert!(!out.contains("mine-2"));
     }
 }

@@ -24,6 +24,7 @@ pub struct RepoItem {
     pub pr_draft: Option<bool>,
     pub comments: Option<u64>,
     pub review_decision: Option<String>,
+    pub mine: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -484,6 +485,7 @@ async fn fetch_upstream_items_rest(
             pr_draft: None,
             comments: Some(u64::from(issue.comments)),
             review_decision: None,
+            mine: false,
         });
     }
     items.sort_by(item_cmp);
@@ -635,8 +637,9 @@ async fn fetch_items_inner(
             updated_at,
             author,
             pr_draft: None,
-            comments: None,
+            comments: Some(u64::from(issue.comments)),
             review_decision: None,
+            mine: false,
         });
     }
 
@@ -659,8 +662,12 @@ async fn fetch_items_inner(
             updated_at,
             author,
             pr_draft,
+            // The pulls list endpoint doesn't return a comments count (unlike
+            // the issues endpoint) — left as None so display omits the
+            // fragment rather than showing a false zero.
             comments: None,
             review_decision: None,
+            mine: false,
         });
     }
 
@@ -696,6 +703,7 @@ mod tests {
             pr_draft: None,
             comments: None,
             review_decision: None,
+            mine: false,
         }
     }
 
