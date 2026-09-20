@@ -82,6 +82,10 @@ ghpending rm     # remove repos from the list
 
 Forks are detected automatically — no configuration needed. When a tracked repo turns out to be a fork (e.g. `akitaonrails/omarchy`, forked from `omacom/omarchy`), you almost never care about issues or PRs on the fork itself, so the digest switches to showing the issues and pull requests **you opened on the upstream project** instead: still open, with comment counts and review decisions so you can see if there's feedback waiting. Detection results are cached in the config's `[forks]` table (tracked fork name → upstream name, or an empty string for a confirmed non-fork) so repeat runs don't pay for the extra lookup. Manual edits to that table always win: delete an entry to force re-detection, set it to `""` to opt a fork out of the upstream view (useful for forks you maintain as independent projects), or point it at a different upstream entirely.
 
+## Alerts
+
+For tracked repos you own, `ghpending` also fetches and shows open dependabot, secret scanning and code scanning alerts alongside issues and pull requests — the things GitHub's security tab would otherwise make you check separately. Dependabot and secret scanning findings, plus any code scanning finding with a security severity, are tagged `SEC`; plain code scanning quality findings (no security severity) are tagged `QUA`. Both sort ahead of PRs and issues, most severe first, and show the severity, the alert source and how long it's been open instead of an author. This requires a `GITHUB_TOKEN` (these endpoints have no anonymous access) and only ever covers repos whose owner matches the authenticated login — alerts for other people's repos, including forks you track, are never fetched. Set `alerts = false` in the config file to turn this off.
+
 ## Authentication
 
 `GITHUB_TOKEN` is optional. Without one, public repository access is subject to GitHub's 60 requests/hour limit. Set a token for a 5,000 requests/hour limit, access to private repositories, and faster digests (all repos are fetched in one batched GraphQL request instead of two REST calls each):

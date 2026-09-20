@@ -53,6 +53,15 @@ fn render_inner_limited(
         .iter()
         .filter(|r| matches!(&r.status, RepoStatus::Error(_)))
         .count();
+    let alert_count = results
+        .iter()
+        .filter_map(|r| match &r.status {
+            RepoStatus::Items(items) => Some(items),
+            _ => None,
+        })
+        .flatten()
+        .filter(|item| matches!(item.kind, ItemKind::Security | ItemKind::Quality))
+        .count();
 
     let mut body = String::new();
     let mut shown = 0;
@@ -110,6 +119,18 @@ fn render_inner_limited(
                             let title = truncate_title(&item.title, title_max);
                             (ks, ns, title)
                         }
+                        ItemKind::Security => {
+                            let ks = paint("SEC", color, theme.security);
+                            let ns = format!("#{}", item.number);
+                            let title = truncate_title(&item.title, title_max);
+                            (ks, ns, title)
+                        }
+                        ItemKind::Quality => {
+                            let ks = paint("QUA", color, theme.quality);
+                            let ns = format!("#{}", item.number);
+                            let title = truncate_title(&item.title, title_max);
+                            (ks, ns, title)
+                        }
                     };
 
                     body.push_str(&format!("  {kind_str}  {number_str}  {title_str}\n"));
@@ -121,7 +142,14 @@ fn render_inner_limited(
                     // their own attention coloring.
                     let mut fragments: Vec<String> = Vec::new();
 
-                    if is_fork_view {
+                    if matches!(item.kind, ItemKind::Security | ItemKind::Quality) {
+                        let severity = item.severity.as_deref().unwrap_or("unknown");
+                        fragments.push(paint(severity, color, severity_style(severity, theme)));
+                        if let Some(source) = item.source {
+                            fragments.push(paint(source, color, theme.meta));
+                        }
+                        fragments.push(paint(&format!("found {rel} ago"), color, theme.meta));
+                    } else if is_fork_view {
                         let rel_updated = relative_time(&item.updated_at, &now);
                         fragments.push(paint(
                             &format!("opened {rel} ago · updated {rel_updated} ago"),
@@ -159,11 +187,14 @@ fn render_inner_limited(
         }
     }
 
-    let summary = if failures > 0 {
+    let mut summary = if failures > 0 {
         format!("{total} projects attempted, {with_pending} with pending tasks, {failures} failed")
     } else {
         format!("{total} projects checked, {with_pending} with pending tasks")
     };
+    if alert_count > 0 {
+        summary.push_str(&format!(", {alert_count} alerts"));
+    }
     let summary_colored = paint(&summary, color, theme.meta);
 
     if body.is_empty() {
@@ -226,7 +257,18 @@ fn pr_state_label(item: &crate::github::RepoItem) -> Option<&'static str> {
             Some(false) => Some("ready"),
             None => None,
         },
-        ItemKind::Issue => None,
+        ItemKind::Issue | ItemKind::Security | ItemKind::Quality => None,
+    }
+}
+
+/// Style for the severity word in an alert's meta line: `theme.security`
+/// for critical/high, `theme.issue` for medium/moderate/error, `theme.meta`
+/// for anything milder (low/warning/note) or unrecognized.
+fn severity_style(severity: &str, theme: &Theme) -> Style {
+    match severity.to_ascii_lowercase().as_str() {
+        "critical" | "high" => theme.security,
+        "medium" | "moderate" | "error" => theme.issue,
+        _ => theme.meta,
     }
 }
 
@@ -249,6 +291,8 @@ mod tests {
             comments: None,
             review_decision: None,
             mine: false,
+            severity: None,
+            source: None,
         }
     }
 
@@ -278,6 +322,8 @@ mod tests {
             comments: None,
             review_decision: None,
             mine: false,
+            severity: None,
+            source: None,
         }
     }
 
@@ -299,6 +345,8 @@ mod tests {
             comments: Some(comments),
             review_decision: review_decision.map(str::to_owned),
             mine: false,
+            severity: None,
+            source: None,
         }
     }
 
@@ -716,5 +764,124 @@ mod tests {
         assert!(out.contains("theirs-2"));
         assert!(!out.contains("mine-1"));
         assert!(!out.contains("mine-2"));
+    }
+
+    fn make_alert_item(
+        kind: ItemKind,
+        number: u64,
+        title: &str,
+        severity: &str,
+        source: &'static str,
+    ) -> RepoItem {
+        RepoItem {
+            severity: Some(severity.to_owned()),
+            source: Some(source),
+            author: String::new(),
+            ..make_item(kind, number, title, 1)
+        }
+    }
+
+    #[test]
+    fn security_alert_renders_sec_tag_and_meta_shape() {
+        let results = vec![RepoResult::new(
+            "owner/repo".into(),
+            RepoStatus::Items(vec![make_alert_item(
+                ItemKind::Security,
+                1,
+                "leaked secret: PyPI API token",
+                "critical",
+                "secret scanning",
+            )]),
+        )];
+        let out = render_inner(&results, &Theme::default_theme(), false, 80);
+        assert!(out.contains("SEC"));
+        assert!(out.contains("#1"));
+        assert!(out.contains("leaked secret: PyPI API token"));
+        assert!(out.contains("critical · secret scanning · found 1d ago"));
+    }
+
+    #[test]
+    fn quality_alert_renders_qua_tag_and_meta_shape() {
+        let results = vec![RepoResult::new(
+            "owner/repo".into(),
+            RepoStatus::Items(vec![make_alert_item(
+                ItemKind::Quality,
+                2,
+                "Unused variable",
+                "warning",
+                "code scanning",
+            )]),
+        )];
+        let out = render_inner(&results, &Theme::default_theme(), false, 80);
+        assert!(out.contains("QUA"));
+        assert!(out.contains("#2"));
+        assert!(out.contains("Unused variable"));
+        assert!(out.contains("warning · code scanning · found 1d ago"));
+    }
+
+    #[test]
+    fn alert_severity_coloring_differs_between_critical_and_low() {
+        let critical_out = render_inner(
+            &[RepoResult::new(
+                "owner/repo".into(),
+                RepoStatus::Items(vec![make_alert_item(
+                    ItemKind::Security,
+                    1,
+                    "x",
+                    "critical",
+                    "dependabot",
+                )]),
+            )],
+            &Theme::default_theme(),
+            true,
+            80,
+        );
+        let low_out = render_inner(
+            &[RepoResult::new(
+                "owner/repo".into(),
+                RepoStatus::Items(vec![make_alert_item(
+                    ItemKind::Security,
+                    1,
+                    "x",
+                    "low",
+                    "dependabot",
+                )]),
+            )],
+            &Theme::default_theme(),
+            true,
+            80,
+        );
+        let critical_line = critical_out
+            .lines()
+            .find(|l| l.contains("critical"))
+            .unwrap();
+        let low_line = low_out.lines().find(|l| l.contains("low")).unwrap();
+        assert!(critical_line.contains("\x1b["));
+        assert!(low_line.contains("\x1b["));
+        assert_ne!(critical_line, low_line);
+    }
+
+    #[test]
+    fn summary_appends_alert_count_when_alerts_present() {
+        let results = vec![RepoResult::new(
+            "owner/repo".into(),
+            RepoStatus::Items(vec![
+                make_alert_item(ItemKind::Security, 1, "a", "critical", "dependabot"),
+                make_alert_item(ItemKind::Quality, 2, "b", "warning", "code scanning"),
+                make_item(ItemKind::Issue, 3, "c", 0),
+            ]),
+        )];
+        let out = render_inner(&results, &Theme::default_theme(), false, 80);
+        assert!(out.contains("1 projects checked, 1 with pending tasks, 2 alerts"));
+    }
+
+    #[test]
+    fn summary_omits_alert_count_when_no_alerts() {
+        let results = vec![RepoResult::new(
+            "owner/repo".into(),
+            RepoStatus::Items(vec![make_item(ItemKind::Issue, 1, "x", 0)]),
+        )];
+        let out = render_inner(&results, &Theme::default_theme(), false, 80);
+        assert!(!out.contains("alerts"));
     }
 }

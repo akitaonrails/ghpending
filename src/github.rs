@@ -25,12 +25,25 @@ pub struct RepoItem {
     pub comments: Option<u64>,
     pub review_decision: Option<String>,
     pub mine: bool,
+    /// Severity/level for `Security`/`Quality` items: dependabot/secret
+    /// scanning use critical/high/medium/low, code scanning quality uses
+    /// error/warning/note. `None` for issues and pull requests.
+    pub severity: Option<String>,
+    /// Which alert source produced this item: "dependabot", "secret
+    /// scanning" or "code scanning". `None` for issues and pull requests.
+    pub source: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ItemKind {
     PullRequest,
     Issue,
+    /// A dependabot alert, a secret scanning alert, or a code scanning
+    /// alert whose rule carries a `security_severity_level`.
+    Security,
+    /// A code scanning alert whose rule has no `security_severity_level`
+    /// (a plain lint-style finding, not a security advisory).
+    Quality,
 }
 
 pub type SubscribedItems = HashMap<String, HashSet<u64>>;
@@ -184,10 +197,43 @@ pub fn resolve_list_source(
     }
 }
 
+/// Rank used by `item_cmp` to order kinds: alerts first, then pull requests,
+/// then issues.
+fn kind_rank(kind: &ItemKind) -> u8 {
+    match kind {
+        ItemKind::Security => 0,
+        ItemKind::Quality => 1,
+        ItemKind::PullRequest => 2,
+        ItemKind::Issue => 3,
+    }
+}
+
+/// Maps a severity/level word to a rank where lower sorts first (more
+/// severe first): critical/error, high/warning, medium/moderate/note,
+/// low, then anything unrecognized last. Case-insensitive.
+fn severity_rank(severity: &str) -> u8 {
+    match severity.to_ascii_lowercase().as_str() {
+        "critical" | "error" => 0,
+        "high" | "warning" => 1,
+        "medium" | "moderate" | "note" => 2,
+        "low" => 3,
+        _ => 4,
+    }
+}
+
 pub fn item_cmp(a: &RepoItem, b: &RepoItem) -> Ordering {
-    match (&a.kind, &b.kind) {
-        (ItemKind::PullRequest, ItemKind::Issue) => Ordering::Less,
-        (ItemKind::Issue, ItemKind::PullRequest) => Ordering::Greater,
+    let (rank_a, rank_b) = (kind_rank(&a.kind), kind_rank(&b.kind));
+    if rank_a != rank_b {
+        return rank_a.cmp(&rank_b);
+    }
+    match a.kind {
+        ItemKind::Security | ItemKind::Quality => {
+            let severity_a = a.severity.as_deref().map_or(4, severity_rank);
+            let severity_b = b.severity.as_deref().map_or(4, severity_rank);
+            severity_a
+                .cmp(&severity_b)
+                .then_with(|| b.number.cmp(&a.number))
+        }
         _ => b.number.cmp(&a.number),
     }
 }
@@ -486,6 +532,8 @@ async fn fetch_upstream_items_rest(
             comments: Some(u64::from(issue.comments)),
             review_decision: None,
             mine: false,
+            severity: None,
+            source: None,
         });
     }
     items.sort_by(item_cmp);
@@ -640,6 +688,8 @@ async fn fetch_items_inner(
             comments: Some(u64::from(issue.comments)),
             review_decision: None,
             mine: false,
+            severity: None,
+            source: None,
         });
     }
 
@@ -668,6 +718,8 @@ async fn fetch_items_inner(
             comments: None,
             review_decision: None,
             mine: false,
+            severity: None,
+            source: None,
         });
     }
 
@@ -688,6 +740,217 @@ pub(crate) fn retain_subscribed(
     }
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct DependabotPackage {
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DependabotDependency {
+    #[serde(default)]
+    package: DependabotPackage,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DependabotAdvisory {
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    severity: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DependabotAlert {
+    #[serde(default)]
+    number: u64,
+    #[serde(default)]
+    dependency: DependabotDependency,
+    #[serde(default)]
+    security_advisory: DependabotAdvisory,
+    #[serde(default)]
+    created_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct SecretScanningAlert {
+    #[serde(default)]
+    number: u64,
+    #[serde(default)]
+    secret_type_display_name: String,
+    #[serde(default)]
+    created_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CodeScanningRule {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    severity: String,
+    #[serde(default)]
+    security_severity_level: Option<String>,
+    #[serde(default)]
+    description: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CodeScanningAlert {
+    #[serde(default)]
+    number: u64,
+    #[serde(default)]
+    rule: CodeScanningRule,
+    #[serde(default)]
+    created_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    updated_at: Option<DateTime<Utc>>,
+}
+
+/// Fetches one repo's open dependabot/secret-scanning/code-scanning alerts
+/// concurrently. Each source is independent: an error on one (401/403 for
+/// non-admins, 404 for a repo without that feature enabled, a timeout) never
+/// fails the others and never surfaces as a `RepoStatus::Error` — it just
+/// contributes no items, silently, so non-admins and repos without CodeQL
+/// don't produce noise.
+///
+/// Each request fetches only the first 100 open alerts (`per_page=100`,
+/// no further pagination) — realistically nobody has more than 100 open
+/// alerts of one kind, and if they do the count is still actionable.
+pub async fn fetch_repo_alerts(crab: &Octocrab, owner: &str, name: &str) -> Vec<RepoItem> {
+    let (dependabot, secret_scanning, code_scanning) = futures::join!(
+        fetch_dependabot_alerts(crab, owner, name),
+        fetch_secret_scanning_alerts(crab, owner, name),
+        fetch_code_scanning_alerts(crab, owner, name),
+    );
+
+    let mut items =
+        Vec::with_capacity(dependabot.len() + secret_scanning.len() + code_scanning.len());
+    items.extend(dependabot);
+    items.extend(secret_scanning);
+    items.extend(code_scanning);
+    items
+}
+
+async fn fetch_dependabot_alerts(crab: &Octocrab, owner: &str, name: &str) -> Vec<RepoItem> {
+    let path = format!("/repos/{owner}/{name}/dependabot/alerts?state=open&per_page=100");
+    let Ok(Ok(alerts)) = timeout(
+        FETCH_TIMEOUT,
+        crab.get::<Vec<DependabotAlert>, _, _>(&path, None::<&()>),
+    )
+    .await
+    else {
+        return Vec::new();
+    };
+
+    alerts
+        .into_iter()
+        .map(|alert| {
+            let created_at = alert.created_at.unwrap_or_else(Utc::now);
+            let updated_at = alert.updated_at.unwrap_or(created_at);
+            RepoItem {
+                kind: ItemKind::Security,
+                number: alert.number,
+                title: format!(
+                    "{}: {}",
+                    alert.dependency.package.name, alert.security_advisory.summary
+                ),
+                created_at,
+                updated_at,
+                author: String::new(),
+                pr_draft: None,
+                comments: None,
+                review_decision: None,
+                mine: false,
+                severity: Some(alert.security_advisory.severity),
+                source: Some("dependabot"),
+            }
+        })
+        .collect()
+}
+
+async fn fetch_secret_scanning_alerts(crab: &Octocrab, owner: &str, name: &str) -> Vec<RepoItem> {
+    let path = format!("/repos/{owner}/{name}/secret-scanning/alerts?state=open&per_page=100");
+    let Ok(Ok(alerts)) = timeout(
+        FETCH_TIMEOUT,
+        crab.get::<Vec<SecretScanningAlert>, _, _>(&path, None::<&()>),
+    )
+    .await
+    else {
+        return Vec::new();
+    };
+
+    alerts
+        .into_iter()
+        .map(|alert| {
+            let created_at = alert.created_at.unwrap_or_else(Utc::now);
+            let updated_at = alert.updated_at.unwrap_or(created_at);
+            RepoItem {
+                kind: ItemKind::Security,
+                number: alert.number,
+                title: format!("leaked secret: {}", alert.secret_type_display_name),
+                created_at,
+                updated_at,
+                author: String::new(),
+                pr_draft: None,
+                comments: None,
+                review_decision: None,
+                mine: false,
+                // A live leaked secret is always critical, regardless of
+                // what kind of secret it is.
+                severity: Some("critical".to_owned()),
+                source: Some("secret scanning"),
+            }
+        })
+        .collect()
+}
+
+async fn fetch_code_scanning_alerts(crab: &Octocrab, owner: &str, name: &str) -> Vec<RepoItem> {
+    let path = format!("/repos/{owner}/{name}/code-scanning/alerts?state=open&per_page=100");
+    let Ok(Ok(alerts)) = timeout(
+        FETCH_TIMEOUT,
+        crab.get::<Vec<CodeScanningAlert>, _, _>(&path, None::<&()>),
+    )
+    .await
+    else {
+        return Vec::new();
+    };
+
+    alerts
+        .into_iter()
+        .map(|alert| {
+            let created_at = alert.created_at.unwrap_or_else(Utc::now);
+            let updated_at = alert.updated_at.unwrap_or(created_at);
+            let (kind, severity) = match alert.rule.security_severity_level {
+                Some(level) => (ItemKind::Security, level),
+                None => (ItemKind::Quality, alert.rule.severity),
+            };
+            let title = if alert.rule.description.is_empty() {
+                alert.rule.id
+            } else {
+                alert.rule.description
+            };
+            RepoItem {
+                kind,
+                number: alert.number,
+                title,
+                created_at,
+                updated_at,
+                author: String::new(),
+                pr_draft: None,
+                comments: None,
+                review_decision: None,
+                mine: false,
+                severity: Some(severity),
+                source: Some("code scanning"),
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -704,6 +967,8 @@ mod tests {
             comments: None,
             review_decision: None,
             mine: false,
+            severity: None,
+            source: None,
         }
     }
 
@@ -837,5 +1102,63 @@ mod tests {
         items.sort_by(item_cmp);
         let numbers: Vec<u64> = items.iter().map(|i| i.number).collect();
         assert_eq!(numbers, vec![8, 2, 10, 5]);
+    }
+
+    fn make_alert_item(kind: ItemKind, number: u64, severity: &str) -> RepoItem {
+        RepoItem {
+            severity: Some(severity.to_owned()),
+            ..make_item(kind, number)
+        }
+    }
+
+    #[test]
+    fn severity_rank_orders_critical_first_and_unknown_last() {
+        assert!(severity_rank("critical") < severity_rank("high"));
+        assert!(severity_rank("high") < severity_rank("medium"));
+        assert!(severity_rank("medium") < severity_rank("low"));
+        assert!(severity_rank("low") < severity_rank("whatever"));
+        assert_eq!(severity_rank("moderate"), severity_rank("medium"));
+        assert_eq!(severity_rank("CRITICAL"), severity_rank("critical"));
+    }
+
+    #[test]
+    fn severity_rank_orders_code_scanning_words() {
+        assert!(severity_rank("error") < severity_rank("warning"));
+        assert!(severity_rank("warning") < severity_rank("note"));
+    }
+
+    #[test]
+    fn item_cmp_ranks_security_then_quality_then_pr_then_issue() {
+        let mut items = [
+            make_item(ItemKind::Issue, 1),
+            make_item(ItemKind::PullRequest, 1),
+            make_alert_item(ItemKind::Quality, 1, "warning"),
+            make_alert_item(ItemKind::Security, 1, "high"),
+        ];
+        items.sort_by(item_cmp);
+        let kinds: Vec<ItemKind> = items.iter().map(|i| i.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ItemKind::Security,
+                ItemKind::Quality,
+                ItemKind::PullRequest,
+                ItemKind::Issue,
+            ]
+        );
+    }
+
+    #[test]
+    fn item_cmp_sorts_alerts_by_severity_then_number_desc() {
+        let mut items = [
+            make_alert_item(ItemKind::Security, 1, "low"),
+            make_alert_item(ItemKind::Security, 2, "critical"),
+            make_alert_item(ItemKind::Security, 3, "critical"),
+            make_alert_item(ItemKind::Security, 4, "high"),
+        ];
+        items.sort_by(item_cmp);
+        let numbers: Vec<u64> = items.iter().map(|i| i.number).collect();
+        // critical(3) > critical(2), tie-broken by number desc, then high, then low.
+        assert_eq!(numbers, vec![3, 2, 4, 1]);
     }
 }

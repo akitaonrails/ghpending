@@ -143,6 +143,8 @@ mod tests {
             comments: None,
             review_decision: None,
             mine: false,
+            severity: None,
+            source: None,
         }
     }
 

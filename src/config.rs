@@ -13,6 +13,11 @@ pub struct Config {
     pub theme: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort: Option<String>,
+    /// Whether the digest fetches and shows dependabot/secret-scanning/
+    /// code-scanning alerts for tracked repos the viewer owns. `None`
+    /// (the default, omitted from the file) behaves like `Some(true)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alerts: Option<bool>,
     /// Tracked fork name -> upstream name, auto-managed: the GraphQL path
     /// refreshes it each run, the REST path populates it on first sight of a
     /// repo. Edit or delete entries to force re-detection. A value of `""`
@@ -131,6 +136,7 @@ mod tests {
             repos: vec!["owner/repo".into(), "foo/bar".into()],
             theme: None,
             sort: None,
+            alerts: None,
             forks: HashMap::new(),
         };
         let s = toml::to_string(&cfg).unwrap();
@@ -146,6 +152,7 @@ mod tests {
             repos: vec!["owner/repo".into()],
             theme: None,
             sort: None,
+            alerts: None,
             forks: HashMap::new(),
         };
         let s = toml::to_string(&cfg).unwrap();
@@ -161,6 +168,7 @@ mod tests {
         assert!(cfg.repos.is_empty());
         assert!(cfg.theme.is_none());
         assert!(cfg.sort.is_none());
+        assert!(cfg.alerts.is_none());
         assert!(cfg.forks.is_empty());
     }
 
@@ -171,6 +179,7 @@ mod tests {
             repos: vec!["owner/repo".into()],
             theme: Some("nerv".into()),
             sort: None,
+            alerts: None,
             forks: HashMap::new(),
         };
         let s = toml::to_string(&cfg).unwrap();
@@ -185,6 +194,7 @@ mod tests {
             repos: vec![],
             theme: None,
             sort: None,
+            alerts: None,
             forks: HashMap::new(),
         };
         let s = toml::to_string(&cfg).unwrap();
@@ -200,6 +210,7 @@ mod tests {
             repos: vec!["owner/repo".into()],
             theme: None,
             sort: Some("name".into()),
+            alerts: None,
             forks: HashMap::new(),
         };
         let s = toml::to_string(&cfg).unwrap();
@@ -214,12 +225,44 @@ mod tests {
             repos: vec![],
             theme: None,
             sort: None,
+            alerts: None,
             forks: HashMap::new(),
         };
         let s = toml::to_string(&cfg).unwrap();
         assert!(!s.contains("sort"));
         let back: Config = toml::from_str(&s).unwrap();
         assert!(back.sort.is_none());
+    }
+
+    #[test]
+    fn round_trip_with_alerts_disabled() {
+        let cfg = Config {
+            user: Some("octocat".into()),
+            repos: vec!["owner/repo".into()],
+            theme: None,
+            sort: None,
+            alerts: Some(false),
+            forks: HashMap::new(),
+        };
+        let s = toml::to_string(&cfg).unwrap();
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(back.alerts, Some(false));
+    }
+
+    #[test]
+    fn round_trip_alerts_none_omitted() {
+        let cfg = Config {
+            user: None,
+            repos: vec![],
+            theme: None,
+            sort: None,
+            alerts: None,
+            forks: HashMap::new(),
+        };
+        let s = toml::to_string(&cfg).unwrap();
+        assert!(!s.contains("alerts"));
+        let back: Config = toml::from_str(&s).unwrap();
+        assert!(back.alerts.is_none());
     }
 
     #[test]
@@ -235,6 +278,7 @@ mod tests {
             repos: vec!["akitaonrails/omarchy".into(), "acme/normal".into()],
             theme: None,
             sort: None,
+            alerts: None,
             forks,
         };
         let s = toml::to_string(&cfg).unwrap();
@@ -254,6 +298,7 @@ mod tests {
             repos: vec![],
             theme: None,
             sort: None,
+            alerts: None,
             forks: HashMap::new(),
         };
         let s = toml::to_string(&cfg).unwrap();

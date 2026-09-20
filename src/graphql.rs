@@ -394,6 +394,8 @@ fn items_from_node(node: &RepoNode) -> Vec<RepoItem> {
             comments: Some(issue.comments.as_ref().map_or(0, |c| c.total_count)),
             review_decision: None,
             mine: false,
+            severity: None,
+            source: None,
         });
     }
     for pr in &node.pull_requests.nodes {
@@ -408,6 +410,8 @@ fn items_from_node(node: &RepoNode) -> Vec<RepoItem> {
             comments: Some(pr.comments.as_ref().map_or(0, |c| c.total_count)),
             review_decision: None,
             mine: false,
+            severity: None,
+            source: None,
         });
     }
 
@@ -647,6 +651,8 @@ fn items_from_search_nodes(nodes: &[SearchNode]) -> Vec<RepoItem> {
             comments,
             review_decision,
             mine: false,
+            severity: None,
+            source: None,
         });
     }
 

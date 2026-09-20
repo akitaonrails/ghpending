@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use futures::stream::{self, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use octocrab::Octocrab;
 use tokio::time::timeout;
@@ -11,6 +12,7 @@ use crate::theme::Theme;
 use crate::{config, display, github, github_client, graphql, sort};
 
 const SUBSCRIBED_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_CONCURRENT_ALERT_FETCHES: usize = 4;
 
 pub async fn run(
     crab: &Octocrab,
@@ -86,6 +88,16 @@ pub async fn run(
     }
 
     let viewer = resolve_viewer(crab, &cfg).await;
+
+    // Alerts are never filtered by --subscribed: that filter operates on
+    // the subscribed-issues set fetched above, which alerts never enter.
+    if github_client::github_token().is_some()
+        && cfg.alerts.unwrap_or(true)
+        && let Some(login) = viewer.as_deref()
+    {
+        augment_with_alerts(crab, &mut results, login).await;
+    }
+
     mark_and_order_items(&mut results, viewer.as_deref());
 
     sort::sort_results(&mut results, sort_mode);
@@ -139,6 +151,55 @@ pub(crate) fn mark_and_order_items(results: &mut [RepoResult], viewer: Option<&s
     }
 }
 
+/// Fetches dependabot/secret-scanning/code-scanning alerts for every tracked
+/// repo the viewer owns, and prepends them to that repo's items.
+///
+/// A repo qualifies when: it isn't a fork view (`upstream.is_none()` — a
+/// fork's items already come from the upstream project, not the tracked
+/// repo itself), its fetch succeeded (`RepoStatus::Items`), and its owner
+/// matches `viewer` case-insensitively (only repos you own carry
+/// maintainer-only alert endpoints you can read). Fetches run with bounded
+/// concurrency; `fetch_repo_alerts` never errors, so this never turns a
+/// successful repo fetch into a failure.
+async fn augment_with_alerts(crab: &Octocrab, results: &mut [RepoResult], viewer: &str) {
+    let targets: Vec<(usize, String)> = results
+        .iter()
+        .enumerate()
+        .filter(|(_, result)| {
+            result.upstream.is_none()
+                && matches!(result.status, RepoStatus::Items(_))
+                && github::split_repo(&result.repo)
+                    .is_some_and(|(owner, _)| owner.eq_ignore_ascii_case(viewer))
+        })
+        .map(|(index, result)| (index, result.repo.clone()))
+        .collect();
+
+    if targets.is_empty() {
+        return;
+    }
+
+    let mut fetches = stream::iter(targets.into_iter().map(|(index, repo)| async move {
+        let alerts = match github::split_repo(&repo) {
+            Some((owner, name)) => github::fetch_repo_alerts(crab, owner, name).await,
+            None => Vec::new(),
+        };
+        (index, alerts)
+    }))
+    .buffer_unordered(MAX_CONCURRENT_ALERT_FETCHES);
+
+    while let Some((index, alerts)) = fetches.next().await {
+        if alerts.is_empty() {
+            continue;
+        }
+        if let RepoStatus::Items(items) = &mut results[index].status {
+            let mut merged = alerts;
+            merged.append(items);
+            merged.sort_by(github::item_cmp);
+            *items = merged;
+        }
+    }
+}
+
 /// Merges freshly observed fork-cache entries over the existing cache and
 /// returns the result only when it actually changes something. Merging (not
 /// replacing) keeps entries for repos that errored this run, and the fresh
@@ -183,6 +244,8 @@ mod tests {
             comments: None,
             review_decision: None,
             mine: false,
+            severity: None,
+            source: None,
         }
     }
 
@@ -226,6 +289,38 @@ mod tests {
         };
         assert_eq!(fork_items[0].number, 5);
         assert!(!fork_items[0].mine);
+    }
+
+    #[test]
+    fn mark_and_order_items_keeps_alerts_first_then_others_then_mine() {
+        // Mirrors what `augment_with_alerts` produces just before this runs:
+        // alerts prepended and the whole vec re-sorted by `item_cmp`, which
+        // ranks Security < PullRequest < Issue regardless of `mine`.
+        let mut items = vec![
+            item(2, "alice"), // others' issue
+            RepoItem {
+                kind: ItemKind::PullRequest,
+                ..item(3, "viewer")
+            }, // my PR
+            RepoItem {
+                kind: ItemKind::Security,
+                severity: Some("critical".into()),
+                ..item(9, "")
+            }, // SEC alert
+        ];
+        items.sort_by(crate::github::item_cmp);
+
+        let mut results = vec![RepoResult::new("a/b".into(), RepoStatus::Items(items))];
+        mark_and_order_items(&mut results, Some("viewer"));
+
+        let RepoStatus::Items(items) = &results[0].status else {
+            panic!("expected items")
+        };
+        let kinds: Vec<ItemKind> = items.iter().map(|i| i.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            vec![ItemKind::Security, ItemKind::Issue, ItemKind::PullRequest]
+        );
     }
 
     #[test]

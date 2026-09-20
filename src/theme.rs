@@ -14,6 +14,12 @@ pub struct Theme {
     /// Attention highlight for signals that mean "act on this" — nonzero
     /// comment counts, a "changes requested" review decision.
     pub feedback: Style,
+    /// Security alerts (dependabot, secret scanning, code scanning with a
+    /// security severity) — distinct from `error`, which reports fetch
+    /// failures rather than something to act on.
+    pub security: Style,
+    /// Code scanning quality findings (no security severity).
+    pub quality: Style,
 }
 
 impl Theme {
@@ -26,6 +32,10 @@ impl Theme {
             error: Style::new().red().dimmed(),
             mine: Style::new().dimmed(),
             feedback: Style::new().green().bold(),
+            // Default `error` is red+dimmed (a fetch failure, easy to skim
+            // past); security alerts need the opposite treatment.
+            security: Style::new().red().bold(),
+            quality: Style::new().blue(),
         }
     }
 
@@ -38,6 +48,8 @@ impl Theme {
             error: Style::new().color(XtermColors::Red),
             mine: Style::new().dimmed().color(XtermColors::WildBlueYonder),
             feedback: Style::new().bold().color(XtermColors::ChartreuseGreen),
+            security: Style::new().bold().color(XtermColors::Red),
+            quality: Style::new().color(XtermColors::ChetwodeBlue),
         }
     }
 
@@ -50,6 +62,10 @@ impl Theme {
             error: Style::new().bold().color(XtermColors::Red),
             mine: Style::new().dimmed().color(XtermColors::BondiBlue),
             feedback: Style::new().bold().color(XtermColors::SpringGreen),
+            // `error` is already bold Red (fetch failures); a slightly
+            // deeper red keeps security alerts red-bold but distinguishable.
+            security: Style::new().bold().color(XtermColors::GuardsmanRed),
+            quality: Style::new().color(XtermColors::BondiBlue),
         }
     }
 
