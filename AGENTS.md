@@ -13,7 +13,7 @@
 
 ## Runtime gotchas
 
-- `GITHUB_TOKEN` is optional for public repos/rate limit, but private repos only show up when the token can read them. Use `NO_COLOR=1` when snapshotting output.
+- Auth token resolution order: `$GHPENDING_GITHUB_TOKEN`, then `$GITHUB_TOKEN`, then `gh auth token` (subprocess, silent on failure), then anonymous. A token is optional for public repos/rate limit, but private repos only show up when the token can read them. Use `NO_COLOR=1` when snapshotting output.
 - GitHub API client auto-routes through a SOCKS proxy when one is already available at `127.0.0.1:9050`; `GHPENDING_GITHUB_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` are also honored for `socks5`/`socks5h` values. If no proxy is available, it falls back to direct API access.
 - Config is user-local, not repo-local: Linux `~/.config/ghpending/config.toml`, macOS `~/Library/Application Support/ghpending/config.toml`; saves use mode `0600` on Unix. On Linux, set a temporary `XDG_CONFIG_HOME` for manual runs if you do not want to mutate the real watch list.
 - `ghpending add --user <name>` persists/replaces the saved default user. `ghpending add --all` ignores the saved user and lists every token-visible owned/collaborator/org-member repo.

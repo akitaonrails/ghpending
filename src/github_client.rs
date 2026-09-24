@@ -90,11 +90,58 @@ fn build_proxied(token: Option<&str>, proxy_uri: Uri) -> Result<Octocrab> {
         .build()?)
 }
 
+/// The token the whole run authenticates with, resolved once per process
+/// (later calls return the cached answer): `$GHPENDING_GITHUB_TOKEN`, then
+/// `$GITHUB_TOKEN`, then the gh CLI's stored OAuth token. The tool-specific
+/// variable exists because exporting `GITHUB_TOKEN` globally overrides the
+/// gh CLI's own keyring auth — with the `gh auth token` fallback, logging in
+/// to gh is enough and nothing needs exporting at all.
 pub(crate) fn github_token() -> Option<String> {
-    std::env::var("GITHUB_TOKEN")
+    static TOKEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    TOKEN
+        .get_or_init(|| {
+            resolve_token(
+                env_token("GHPENDING_GITHUB_TOKEN"),
+                env_token("GITHUB_TOKEN"),
+                gh_cli_token,
+            )
+        })
+        .clone()
+}
+
+/// Pure precedence: tool-specific env var, generic env var, then the
+/// fallback — which is only invoked when both env vars are absent.
+fn resolve_token(
+    specific: Option<String>,
+    generic: Option<String>,
+    fallback: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    specific.or(generic).or_else(fallback)
+}
+
+fn env_token(var: &str) -> Option<String> {
+    std::env::var(var)
         .ok()
         .map(|token| token.trim().to_owned())
         .filter(|token| !token.is_empty())
+}
+
+/// Asks the gh CLI for its stored OAuth token. Any failure — gh not
+/// installed, not logged in, unexpected output — quietly yields None
+/// (anonymous access, as before). Stdin is nulled so gh can never block
+/// the digest waiting for input.
+fn gh_cli_token() -> Option<String> {
+    let output = std::process::Command::new("gh")
+        .args(["auth", "token"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let token = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    (!token.is_empty()).then_some(token)
 }
 
 #[derive(Debug)]
@@ -176,6 +223,31 @@ fn local_proxy_is_listening() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn specific_env_token_wins_and_fallback_is_not_invoked() {
+        let token = resolve_token(Some("specific".into()), Some("generic".into()), || {
+            panic!("fallback must not run when an env token exists")
+        });
+        assert_eq!(token.as_deref(), Some("specific"));
+    }
+
+    #[test]
+    fn generic_env_token_beats_fallback() {
+        let token = resolve_token(None, Some("generic".into()), || {
+            panic!("fallback must not run when an env token exists")
+        });
+        assert_eq!(token.as_deref(), Some("generic"));
+    }
+
+    #[test]
+    fn fallback_used_only_when_no_env_token() {
+        assert_eq!(
+            resolve_token(None, None, || Some("from-gh".into())).as_deref(),
+            Some("from-gh")
+        );
+        assert_eq!(resolve_token(None, None, || None), None);
+    }
 
     #[test]
     fn normalizes_socks5h_proxy_uri_for_connector() {

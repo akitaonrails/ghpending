@@ -88,16 +88,20 @@ For tracked repos you own, `ghpending` also fetches and shows open dependabot, s
 
 ## Authentication
 
-`GITHUB_TOKEN` is optional. Without one, public repository access is subject to GitHub's 60 requests/hour limit. Set a token for a 5,000 requests/hour limit, access to private repositories, and faster digests (all repos are fetched in one batched GraphQL request instead of two REST calls each):
+A token is optional but strongly recommended. Without one, public repository access is subject to GitHub's 60 requests/hour limit; with one you get 5,000 requests/hour, private repositories, security alerts, and faster digests (all repos are fetched in one batched GraphQL request instead of two REST calls each).
+
+The token is resolved in this order:
+
+1. `$GHPENDING_GITHUB_TOKEN` — tool-specific, invisible to the gh CLI. Use this when you don't want a globally exported `GITHUB_TOKEN` (which overrides gh's own OAuth keyring auth) or want ghpending on a separate, e.g. read-only, token.
+2. `$GITHUB_TOKEN` — the conventional variable, for CI and scripts.
+3. `gh auth token` — if neither variable is set and the [gh CLI](https://cli.github.com) is installed and logged in, ghpending quietly borrows its stored OAuth token. In practice this means: log in to gh once and ghpending is authenticated everywhere, with nothing exported.
+
+If all three come up empty, ghpending runs anonymously.
+
+The `--subscribed` filter requires a token because GitHub subscriptions are user-specific — with the `gh auth token` fallback, being logged in to gh is enough:
 
 ```sh
-GITHUB_TOKEN=$(gh auth token) ghpending
-```
-
-The `--subscribed` filter requires a token because GitHub subscriptions are user-specific:
-
-```sh
-GITHUB_TOKEN=$(gh auth token) ghpending --subscribed
+ghpending --subscribed
 ```
 
 To include **private** repos, the token needs the `repo` scope (classic) or read access to the repo's Contents, Issues and Pull requests (fine-grained). The token is read silently at startup.
