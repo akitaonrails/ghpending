@@ -13,6 +13,10 @@ pub struct Config {
     pub theme: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort: Option<String>,
+    /// Default item kind filter for the digest (`all`, `prs`, `issues`).
+    /// `None` (the default, omitted from the file) behaves like `all`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub only: Option<String>,
     /// Whether the digest fetches and shows dependabot/secret-scanning/
     /// code-scanning alerts for tracked repos the viewer owns. `None`
     /// (the default, omitted from the file) behaves like `Some(true)`.
@@ -136,6 +140,7 @@ mod tests {
             repos: vec!["owner/repo".into(), "foo/bar".into()],
             theme: None,
             sort: None,
+            only: None,
             alerts: None,
             forks: HashMap::new(),
         };
@@ -152,6 +157,7 @@ mod tests {
             repos: vec!["owner/repo".into()],
             theme: None,
             sort: None,
+            only: None,
             alerts: None,
             forks: HashMap::new(),
         };
@@ -168,6 +174,7 @@ mod tests {
         assert!(cfg.repos.is_empty());
         assert!(cfg.theme.is_none());
         assert!(cfg.sort.is_none());
+        assert!(cfg.only.is_none());
         assert!(cfg.alerts.is_none());
         assert!(cfg.forks.is_empty());
     }
@@ -179,6 +186,7 @@ mod tests {
             repos: vec!["owner/repo".into()],
             theme: Some("nerv".into()),
             sort: None,
+            only: None,
             alerts: None,
             forks: HashMap::new(),
         };
@@ -194,6 +202,7 @@ mod tests {
             repos: vec![],
             theme: None,
             sort: None,
+            only: None,
             alerts: None,
             forks: HashMap::new(),
         };
@@ -210,6 +219,7 @@ mod tests {
             repos: vec!["owner/repo".into()],
             theme: None,
             sort: Some("name".into()),
+            only: None,
             alerts: None,
             forks: HashMap::new(),
         };
@@ -225,6 +235,7 @@ mod tests {
             repos: vec![],
             theme: None,
             sort: None,
+            only: None,
             alerts: None,
             forks: HashMap::new(),
         };
@@ -241,6 +252,7 @@ mod tests {
             repos: vec!["owner/repo".into()],
             theme: None,
             sort: None,
+            only: None,
             alerts: Some(false),
             forks: HashMap::new(),
         };
@@ -256,6 +268,7 @@ mod tests {
             repos: vec![],
             theme: None,
             sort: None,
+            only: None,
             alerts: None,
             forks: HashMap::new(),
         };
@@ -278,6 +291,7 @@ mod tests {
             repos: vec!["akitaonrails/omarchy".into(), "acme/normal".into()],
             theme: None,
             sort: None,
+            only: None,
             alerts: None,
             forks,
         };
@@ -298,11 +312,37 @@ mod tests {
             repos: vec![],
             theme: None,
             sort: None,
+            only: None,
             alerts: None,
             forks: HashMap::new(),
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
         assert!(back.forks.is_empty());
+    }
+
+    #[test]
+    fn round_trip_with_only() {
+        let cfg = Config {
+            user: Some("octocat".into()),
+            repos: vec!["owner/repo".into()],
+            theme: None,
+            sort: None,
+            only: Some("prs".into()),
+            alerts: None,
+            forks: HashMap::new(),
+        };
+        let s = toml::to_string(&cfg).unwrap();
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(back.only.as_deref(), Some("prs"));
+    }
+
+    #[test]
+    fn round_trip_only_none_omitted() {
+        let cfg = Config::default();
+        let s = toml::to_string(&cfg).unwrap();
+        assert!(!s.contains("only"));
+        let back: Config = toml::from_str(&s).unwrap();
+        assert!(back.only.is_none());
     }
 }

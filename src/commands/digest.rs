@@ -7,6 +7,7 @@ use octocrab::Octocrab;
 use tokio::time::timeout;
 
 use crate::github::{RepoResult, RepoStatus};
+use crate::kind_filter::{self, KindFilter};
 use crate::sort::SortMode;
 use crate::theme::Theme;
 use crate::{config, display, github, github_client, graphql, sort};
@@ -20,6 +21,7 @@ pub async fn run(
     limit: Option<usize>,
     subscribed_only: bool,
     sort_mode: SortMode,
+    kind_filter: KindFilter,
 ) -> Result<()> {
     let mut cfg = config::load()?;
 
@@ -93,10 +95,13 @@ pub async fn run(
     // the subscribed-issues set fetched above, which alerts never enter.
     if github_client::github_token().is_some()
         && cfg.alerts.unwrap_or(true)
+        && kind_filter.includes_alerts()
         && let Some(login) = viewer.as_deref()
     {
         augment_with_alerts(crab, &mut results, login).await;
     }
+
+    kind_filter::apply(&mut results, kind_filter);
 
     mark_and_order_items(&mut results, viewer.as_deref());
 

@@ -67,6 +67,7 @@ ghpending        # print the digest
 ghpending --limit 20  # cap the digest at 20 items, distributed proportionally per repo
 ghpending --subscribed  # show only issues and PRs you are subscribed to
 ghpending --sort count  # order repos by open item count instead of activity
+ghpending --only prs    # show only pull requests (or `issues`)
 ghpending list   # show tracked repos
 ghpending rm     # remove repos from the list
 ```
@@ -74,7 +75,7 @@ ghpending rm     # remove repos from the list
 - `ghpending add` — lists repos and lets you select which to track. The username is saved so subsequent `add` runs skip the prompt. Pass `--user <name>` to switch to a different user/org without editing the config; it replaces the saved one.
   - **Private repos:** with a `GITHUB_TOKEN` that has the `repo` scope, `add` includes private repos automatically when the target is your own account or an org you belong to. For a third-party user only their public repos are visible.
   - `--all` lists every repo your token can reach — owned, collaborator and organization-member, private included — in a single picker, ignoring the saved user. Use it to grab private repos you collaborate on across different owners.
-- `ghpending` — fetches tracked repos concurrently and prints their open issues and pull requests. Pass `--subscribed` to show only items that the authenticated user is subscribed to. Pass `--limit <count>` to cap the total number of displayed items; each repository receives a proportional share while preserving its existing item order. Pass `--sort <mode>` to control repo order: `activity` (default, most recently updated open item first), `name` (alphabetical, the config-file order), `count` (most open items first) or `stale` (most neglected repo — oldest-updated open item — first). Within each repo, items you authored are de-emphasized and listed below everyone else's — they're waiting on other people, not on you — and marked "by you" instead of your login; other people's items keep full color since those are the ones to act on. Comment counts show up wherever the API provides them and are highlighted when nonzero, so feedback stands out at a glance.
+- `ghpending` — fetches tracked repos concurrently and prints their open issues and pull requests. Pass `--subscribed` to show only items that the authenticated user is subscribed to. Pass `--limit <count>` to cap the total number of displayed items; each repository receives a proportional share while preserving its existing item order. Pass `--sort <mode>` to control repo order: `activity` (default, most recently updated open item first), `name` (alphabetical, the config-file order), `count` (most open items first) or `stale` (most neglected repo — oldest-updated open item — first). Pass `--only prs` or `--only issues` to focus the digest on a single item kind; repos left with nothing of that kind are omitted, and security/quality alerts are skipped (they are their own kind). `--only all` (the default) shows everything. Within each repo, items you authored are de-emphasized and listed below everyone else's — they're waiting on other people, not on you — and marked "by you" instead of your login; other people's items keep full color since those are the ones to act on. Comment counts show up wherever the API provides them and are highlighted when nonzero, so feedback stands out at a glance.
 - `ghpending list` — prints the repos currently in your watch list.
 - `ghpending rm` — opens an interactive menu to select repos to remove from tracking.
 
@@ -84,7 +85,7 @@ Forks are detected automatically — no configuration needed. When a tracked rep
 
 ## Alerts
 
-For tracked repos you own, `ghpending` also fetches and shows open dependabot, secret scanning and code scanning alerts alongside issues and pull requests — the things GitHub's security tab would otherwise make you check separately. Dependabot and secret scanning findings, plus any code scanning finding with a security severity, are tagged `SEC`; plain code scanning quality findings (no security severity) are tagged `QUA`. Both sort ahead of PRs and issues, most severe first, and show the severity, the alert source and how long it's been open instead of an author. This requires a `GITHUB_TOKEN` (these endpoints have no anonymous access) and only ever covers repos whose owner matches the authenticated login — alerts for other people's repos, including forks you track, are never fetched. Set `alerts = false` in the config file to turn this off.
+For tracked repos you own, `ghpending` also fetches and shows open dependabot, secret scanning and code scanning alerts alongside issues and pull requests — the things GitHub's security tab would otherwise make you check separately. Dependabot and secret scanning findings, plus any code scanning finding with a security severity, are tagged `SEC`; plain code scanning quality findings (no security severity) are tagged `QUA`. Both sort ahead of PRs and issues, most severe first, and show the severity, the alert source and how long it's been open instead of an author. This requires a `GITHUB_TOKEN` (these endpoints have no anonymous access) and only ever covers repos whose owner matches the authenticated login — alerts for other people's repos, including forks you track, are never fetched. Set `alerts = false` in the config file to turn this off. Alerts are also left out when the digest is narrowed with `--only prs` or `--only issues`.
 
 ## Authentication
 
@@ -125,9 +126,10 @@ Example:
 user = "akitaonrails"
 repos = ["ratatui-org/ratatui", "tokio-rs/tokio"]
 sort = "name"
+only = "prs"
 ```
 
-Run `ghpending add --user <name>` to change the `user` field, or edit the file directly to reorder repos. Set `sort` to `activity`, `name`, `count` or `stale` to change the default repo order without passing `--sort` each time.
+Run `ghpending add --user <name>` to change the `user` field, or edit the file directly to reorder repos. Set `sort` to `activity`, `name`, `count` or `stale` to change the default repo order without passing `--sort` each time. Set `only` to `all`, `prs` or `issues` to pick the default item kind; `--only` on the command line wins for a single run (e.g. `--only all` to see everything again).
 
 Set `$GHPENDING_REPOS` to a comma-separated `owner/repo` list to override the tracked repos for a single run, without touching `config.toml`:
 

@@ -6,12 +6,14 @@ mod format;
 mod github;
 mod github_client;
 mod graphql;
+mod kind_filter;
 mod sort;
 mod theme;
 
 use anyhow::{Result, bail};
 use clap::Parser;
 use cli::{Cli, Commands};
+use kind_filter::KindFilter;
 use sort::SortMode;
 use theme::Theme;
 
@@ -26,6 +28,9 @@ async fn main() -> Result<()> {
     }
     if cli.sort.is_some() && cli.command.is_some() {
         bail!("--sort can only be used when rendering the digest");
+    }
+    if cli.only.is_some() && cli.command.is_some() {
+        bail!("--only can only be used when rendering the digest");
     }
 
     let cfg = config::load()?;
@@ -60,6 +65,15 @@ async fn main() -> Result<()> {
         ),
     };
 
+    let only_name = cli.only.as_deref().or(cfg.only.as_deref()).unwrap_or("all");
+    let kind_filter = match KindFilter::by_name(only_name) {
+        Some(filter) => filter,
+        None => bail!(
+            "unknown item kind: {only_name} (available: {})",
+            kind_filter::KIND_NAMES.join(", ")
+        ),
+    };
+
     let crab = github_client::build()?;
 
     match &cli.command {
@@ -67,8 +81,15 @@ async fn main() -> Result<()> {
         Some(Commands::Rm) => commands::remove::run()?,
         Some(Commands::Add { user, all }) => commands::add::run(&crab, user.clone(), *all).await?,
         None => {
-            commands::digest::run(&crab, &resolved_theme, cli.limit, cli.subscribed, sort_mode)
-                .await?
+            commands::digest::run(
+                &crab,
+                &resolved_theme,
+                cli.limit,
+                cli.subscribed,
+                sort_mode,
+                kind_filter,
+            )
+            .await?
         }
     }
 

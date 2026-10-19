@@ -20,6 +20,9 @@ pub struct Cli {
     /// Repo sort order (activity, name, count, stale)
     #[arg(long, value_name = "MODE")]
     pub sort: Option<String>,
+    /// Only show one item kind (all, prs, issues)
+    #[arg(long, value_name = "KIND")]
+    pub only: Option<String>,
 }
 
 #[derive(Subcommand)]
